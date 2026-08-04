@@ -8,7 +8,7 @@ from django.shortcuts import get_object_or_404
 from cookbook.helper.permission_helper import has_group_permission
 from cookbook.models import Recipe
 
-from .pdf_writer import PDFDocument
+from .pdf_writer import PDFDocument, text_width
 
 
 def _user_can_view_recipe(request, recipe):
@@ -36,12 +36,21 @@ def _recipe_image_jpeg(recipe):
         return None
 
 
-def _ingredient_line(ingredient):
+def _fmt_amount(value):
+    # ingredient.amount / nutrition fields are Decimal(decimal_places=16) -
+    # Decimal's :g format keeps every stored trailing zero (unlike float's),
+    # so e.g. 1 comes out as "1.0000000000000000". Round-tripping through
+    # float first gives the same trailing-zero-stripping behaviour a user
+    # actually wants here.
+    return f'{float(value):g}'
+
+
+def _ingredient_row(ingredient):
     if ingredient.no_amount:
         amount = ''
     else:
         unit = f' {ingredient.unit.name}' if ingredient.unit else ''
-        amount = f'{ingredient.amount:g}{unit}'
+        amount = f'{_fmt_amount(ingredient.amount)}{unit}'
     food = ingredient.food.name if ingredient.food else ''
     note = f' ({ingredient.note})' if ingredient.note else ''
     return amount, f'{food}{note}'
@@ -78,13 +87,29 @@ def export_recipe_pdf(request, pk):
 
     doc.rule()
     doc.heading('Ingredients', size=13)
+
+    ingredient_rows = []
     for step in steps:
         for ingredient in step.ingredients.all():
             if ingredient.is_header:
-                doc.paragraph(ingredient.note or '', size=10, bold=True)
-                continue
-            amount, food = _ingredient_line(ingredient)
-            doc.two_column_line(amount, food, size=10)
+                ingredient_rows.append((True, ingredient.note or ''))
+            else:
+                ingredient_rows.append((False, _ingredient_row(ingredient)))
+
+    # Size the amount column to the longest amount actually in this recipe
+    # rather than a fixed guess - otherwise a long amount string (or an
+    # unexpected unit name) draws into the ingredient name next to it.
+    amount_col_width = 60
+    for is_header, row in ingredient_rows:
+        if not is_header:
+            amount_col_width = max(amount_col_width, text_width(row[0], 10, bold=True) + 12)
+
+    for is_header, row in ingredient_rows:
+        if is_header:
+            doc.paragraph(row, size=10, bold=True)
+        else:
+            amount, food = row
+            doc.two_column_line(amount, food, size=10, col_width=amount_col_width)
 
     doc.rule()
     doc.heading('Instructions', size=13)
@@ -96,10 +121,10 @@ def export_recipe_pdf(request, pk):
     if recipe.nutrition:
         doc.rule()
         doc.heading('Nutrition', size=13)
-        doc.two_column_line('Calories', f'{recipe.nutrition.calories:g}', size=10)
-        doc.two_column_line('Fats', f'{recipe.nutrition.fats:g} g', size=10)
-        doc.two_column_line('Carbohydrates', f'{recipe.nutrition.carbohydrates:g} g', size=10)
-        doc.two_column_line('Proteins', f'{recipe.nutrition.proteins:g} g', size=10)
+        doc.two_column_line('Calories', _fmt_amount(recipe.nutrition.calories), size=10)
+        doc.two_column_line('Fats', f'{_fmt_amount(recipe.nutrition.fats)} g', size=10)
+        doc.two_column_line('Carbohydrates', f'{_fmt_amount(recipe.nutrition.carbohydrates)} g', size=10)
+        doc.two_column_line('Proteins', f'{_fmt_amount(recipe.nutrition.proteins)} g', size=10)
 
     pdf_bytes = doc.to_bytes()
 

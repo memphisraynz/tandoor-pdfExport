@@ -42,6 +42,12 @@ def _text_width(text, size, bold):
     return sum(_char_width(c, size, bold) for c in text)
 
 
+def text_width(text, size, bold=False):
+    """Public wrapper so callers can size layout (e.g. a table column) to
+    fit a specific piece of text before drawing it."""
+    return _text_width(text, size, bold)
+
+
 def _wrap(text, size, bold, max_width):
     """Word-wrap a single line (no embedded newlines) to fit max_width."""
     lines = []
