@@ -3,11 +3,11 @@ import {VListItem} from "vuetify/components";
 
 export const plugin: TandoorPlugin = {
     name: 'PDF Export',
-    basePath: 'pdf_export_plugin',
-    defaultLocale: import(`@/plugins/pdf_export_plugin/locales/en.json`),
-    localeFiles: import.meta.glob('@/plugins/pdf_export_plugin/locales/*.json'),
+    basePath: 'tandoor-pdfExport',
+    defaultLocale: import(`@/plugins/tandoor-pdfExport/locales/en.json`),
+    localeFiles: import.meta.glob('@/plugins/tandoor-pdfExport/locales/*.json'),
     routes: [
-        {path: '/pdf-export/', component: () => import("@/plugins/pdf_export_plugin/pages/PdfExportPage.vue"), name: 'PdfExportPage'},
+        {path: '/pdf-export/', component: () => import("@/plugins/tandoor-pdfExport/pages/PdfExportPage.vue"), name: 'PdfExportPage'},
     ],
     navigationDrawer: [],
     bottomNavigation: [],

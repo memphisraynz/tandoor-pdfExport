@@ -69,7 +69,7 @@ def recipe_picker(request):
     if query:
         candidates = Recipe.objects.filter(space=request.space, name__icontains=query).order_by('name')[:50]
         recipes = [r for r in candidates if _user_can_view_recipe(request, r)]
-    return render(request, 'pdf_export_plugin/recipe_picker.html', {'query': query, 'recipes': recipes})
+    return render(request, 'tandoor-pdfExport/recipe_picker.html', {'query': query, 'recipes': recipes})
 
 
 @login_required

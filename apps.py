@@ -12,10 +12,12 @@ class PdfExportConfig(AppConfig):
     # exactly - Django requires this to be the real importable path of
     # wherever the plugin's directory lives on disk.
     name = __package__
-    # Django app labels must be valid Python identifiers, but the clone
-    # folder name might not be (e.g. it contains a hyphen, as ours does) -
-    # so this is set explicitly rather than left to derive from `name`.
-    label = 'pdf_export_plugin'
+    # Django app labels must be valid Python identifiers (letters/digits/
+    # underscore only) - the actual repo/folder name (tandoor-pdfExport)
+    # has a hyphen and isn't valid here, so this is set explicitly rather
+    # than left to derive from `name`. Purely an internal Django registry
+    # key, never shown anywhere in the UI.
+    label = 'tandoor_pdfexport'
     verbose_name = 'PDF Export'
     base_url = 'pdf-export/'
     # Name of the DRF router in urls.py that the core API router should extend.

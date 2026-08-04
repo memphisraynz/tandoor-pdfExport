@@ -1,9 +1,9 @@
 import os
 
-PLUGIN_NAME = 'pdf_export_plugin'
+PLUGIN_NAME = 'tandoor-pdfExport'
 
 CURRENT_DIR = os.path.dirname(os.path.abspath(__file__))
-# CURRENT_DIR = <tandoor>/recipes/plugins/pdf_export_plugin, so three levels
+# CURRENT_DIR = <tandoor>/recipes/plugins/tandoor-pdfExport, so three levels
 # up is the Tandoor repo root (the same directory that contains vue3/).
 BASE_DIR = os.path.dirname(os.path.dirname(os.path.dirname(CURRENT_DIR)))
 
