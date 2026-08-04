@@ -415,34 +415,50 @@ class PDFDocument:
 
     def _prepare_ingredient_rows(self, rows, header_width, food_width, size, note_prefix=''):
         """rows: list of (amount, food, note, is_header). Returns a list of
-        (amount, food_lines, note_lines, is_header, row_height) - wrapping
-        and height precomputed once, shared by ingredient_checklist() and
-        step_block() so their layout can't drift apart."""
+        (amount, food_lines, note_lines, note_inline, is_header, row_height)
+        - wrapping and height precomputed once, shared by
+        ingredient_checklist() and step_block() so their layout can't drift
+        apart. When the food name is a single line with room left over, its
+        note is tucked onto that same line (note_inline=True) instead of
+        wrapping to a line of its own."""
         row_h = size * 1.6
         note_size = size * 0.85
         note_line_h = note_size * 1.4
+        note_gap = 8
         prepared = []
         for amount, food, note, is_header in rows:
             if is_header:
                 lines = self._wrap(food, size, True, header_width, family='data') if food else ['']
-                prepared.append((amount, lines, [], True, row_h * len(lines)))
+                prepared.append((amount, lines, [], False, True, row_h * len(lines)))
                 continue
             food_lines = self._wrap(food, size, False, food_width) if food else ['']
             note_lines = []
+            note_inline = False
             if note:
                 note_text = f'{note_prefix} {note}'.strip() if note_prefix else note
-                note_lines = self._wrap(note_text, note_size, False, food_width, italic=True)
-            height = row_h * max(1, len(food_lines)) + note_line_h * len(note_lines)
-            prepared.append((amount, food_lines, note_lines, False, height))
+                if len(food_lines) == 1:
+                    last_line_w = self._text_width(food_lines[0], size)
+                    note_w = self._text_width(note_text, note_size, italic=True)
+                    if note_w <= food_width - last_line_w - note_gap:
+                        note_inline = True
+                        note_lines = [note_text]
+                if not note_inline:
+                    note_lines = self._wrap(note_text, note_size, False, food_width, italic=True)
+            if note_inline:
+                height = row_h
+            else:
+                height = row_h * max(1, len(food_lines)) + note_line_h * len(note_lines)
+            prepared.append((amount, food_lines, note_lines, note_inline, False, height))
         return prepared
 
-    def _draw_ingredient_row(self, x, food_x, row_top, amount, food_lines, note_lines, is_header, box, size):
+    def _draw_ingredient_row(self, x, food_x, row_top, amount, food_lines, note_lines, note_inline, is_header, box, size):
         """Draws one already-prepared row starting at row_top; returns the
         height consumed (matches the height _prepare_ingredient_rows
         computed for this same row)."""
         row_h = size * 1.6
         note_size = size * 0.85
         note_line_h = note_size * 1.4
+        note_gap = 8
         if is_header:
             for i, line in enumerate(food_lines):
                 self._draw_text(x, row_top - size - i * row_h, line.upper(), size, family='data', bold=True, color=MUTED, letterspacing=1.0)
@@ -454,12 +470,16 @@ class PDFDocument:
         if amount:
             self._draw_text(x + box + 6, row_top - size, amount, size, family='data', bold=True, color=self.accent)
         cursor = row_top
-        for line in food_lines:
+        for i, line in enumerate(food_lines):
             self._draw_text(food_x, cursor - size, line, size)
+            if note_inline and note_lines and i == len(food_lines) - 1:
+                line_w = self._text_width(line, size)
+                self._draw_text(food_x + line_w + note_gap, cursor - size, note_lines[0], note_size, italic=True, color=MUTED)
             cursor -= row_h
-        for note_line in note_lines:
-            self._draw_text(food_x, cursor - note_size, note_line, note_size, italic=True, color=MUTED)
-            cursor -= note_line_h
+        if not note_inline:
+            for note_line in note_lines:
+                self._draw_text(food_x, cursor - note_size, note_line, note_size, italic=True, color=MUTED)
+                cursor -= note_line_h
         return row_top - cursor
 
     def ingredient_checklist(self, rows, size=10, note_prefix=''):
@@ -476,23 +496,32 @@ class PDFDocument:
         food_width = content_width - food_x_offset
 
         prepared = self._prepare_ingredient_rows(rows, content_width, food_width, size, note_prefix)
-        for amount, food_lines, note_lines, is_header, height in prepared:
+        for amount, food_lines, note_lines, note_inline, is_header, height in prepared:
             self._ensure_space(height)
             row_top = self._y
             consumed = self._draw_ingredient_row(
-                MARGIN, MARGIN + food_x_offset, row_top, amount, food_lines, note_lines, is_header, box, size
+                MARGIN, MARGIN + food_x_offset, row_top, amount, food_lines, note_lines, note_inline, is_header, box, size
             )
             self._y -= consumed
 
+    # Leading clearance (space reserved above the numeral) + trailing
+    # clearance (space reserved below its baseline) - kept as named
+    # constants since _step_heading_height() and _draw_step_heading() must
+    # agree on them exactly, or the ensure_space() reservation in
+    # instruction_step()/step_block() stops matching what actually gets
+    # drawn.
+    _HEADING_LEAD = 0.78
+    _HEADING_TRAIL = 0.12  # digits have no descender - this is just a hairline cushion, not real clearance
+
     def _step_heading_height(self, numeral_size=20):
-        return numeral_size * 1.1
+        return numeral_size * (self._HEADING_LEAD + self._HEADING_TRAIL)
 
     def _draw_step_heading(self, index, step_name, numeral_size=20, label_size=8.3, right_edge=None):
         """A big accent-colored numeral, a letterspaced bold label beside
         it, and a thin rule running to `right_edge` (defaults to the page's
         right margin)."""
         right_edge = right_edge if right_edge is not None else PAGE_WIDTH - MARGIN
-        self._y -= numeral_size * 0.78
+        self._y -= numeral_size * self._HEADING_LEAD
         num_baseline = self._y
         self._draw_text(MARGIN, num_baseline, str(index), numeral_size, family='display', color=self.accent)
         num_w = self._text_width(str(index), numeral_size, family='display')
@@ -510,7 +539,7 @@ class PDFDocument:
                 f'{LIGHT_BORDER[0]:.3f} {LIGHT_BORDER[1]:.3f} {LIGHT_BORDER[2]:.3f} RG 0.4 w '
                 f'{rule_x:.2f} {rule_y:.2f} m {right_edge:.2f} {rule_y:.2f} l S'.encode('ascii')
             )
-        self._y = num_baseline - numeral_size * 0.32
+        self._y = num_baseline - numeral_size * self._HEADING_TRAIL
 
     def instruction_step(self, index, step_name, instruction, size=10):
         """A step heading followed by its instruction text, full width - no
@@ -530,16 +559,17 @@ class PDFDocument:
         # the earlier version of this method, which only reserved space for
         # the heading and let paragraph()'s own per-line page-breaking do
         # whatever it wanted with the body).
-        self._ensure_space(self._step_heading_height() + 6 + body_height)
+        gap_before_body, gap_before_next = 4, 22
+        self._ensure_space(self._step_heading_height() + gap_before_body + body_height)
         self._draw_step_heading(index, step_name)
-        self._y -= 6
+        self._y -= gap_before_body
         for line in lines:
             if line is None:
                 self._y -= line_h * 0.6
                 continue
             self._y -= line_h
             self._draw_text(MARGIN, self._y, line, size)
-        self._y -= 8
+        self._y -= gap_before_next
 
     def step_block(self, index, step_name, ingredients, instruction, size=10, left_frac=0.4, gap=18, note_prefix=''):
         """A step heading, then two columns underneath it: this step's own
@@ -576,19 +606,20 @@ class PDFDocument:
             right_lines.extend(self._wrap(raw, size, False, right_width))
         right_height = sum(line_h * 0.6 if l is None else line_h for l in right_lines)
 
+        gap_before_body, gap_before_next = 4, 22
         body_height = max(left_height, right_height)
-        total_height = self._step_heading_height() + 6 + body_height
+        total_height = self._step_heading_height() + gap_before_body + body_height
 
         self._ensure_space(total_height)
         self._draw_step_heading(index, step_name)
-        self._y -= 6
+        self._y -= gap_before_body
 
         top_y = self._y
 
         y = top_y
-        for amount, food_lines, note_lines, is_header, _h in prepared:
+        for amount, food_lines, note_lines, note_inline, is_header, _h in prepared:
             consumed = self._draw_ingredient_row(
-                MARGIN, MARGIN + food_x_offset, y, amount, food_lines, note_lines, is_header, box, size
+                MARGIN, MARGIN + food_x_offset, y, amount, food_lines, note_lines, note_inline, is_header, box, size
             )
             y -= consumed
 
@@ -600,7 +631,7 @@ class PDFDocument:
             y -= line_h
             self._draw_text(right_x, y, line, size)
 
-        self._y = top_y - body_height - 14
+        self._y = top_y - body_height - gap_before_next
 
     # -- TTF embedding -----------------------------------------------------------
     def _build_tounicode(self, gid_unicode):
