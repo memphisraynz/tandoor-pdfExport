@@ -1,7 +1,15 @@
 # Tandoor PDF Export Plugin
 
-Adds a "Export Recipe to PDF" page to Tandoor (linked from the user menu),
-where you can search for a recipe and download it as a formatted PDF.
+Adds a "PDF Export" tab under Settings, where you can search for a recipe
+and download it as a formatted PDF. Also reachable directly at
+`/pdf-export/` (a plain server-rendered page, no Vue/JS build involved)
+as a fallback that doesn't depend on the frontend build succeeding.
+
+It's under Settings rather than the existing recipe Import/Export
+section because that section is a hardcoded core mechanism (a fixed
+if/elif chain of built-in "Integration" classes) with no plugin
+extension point at all - same limitation as the recipe's own "3 dot"
+menu below.
 
 PDF generation (`pdf_writer.py`) is hand-rolled directly against the PDF
 file format using only the Python standard library, plus Pillow for
@@ -46,8 +54,7 @@ string - so it works no matter what you name the folder you clone into).
    var again so future restarts skip it.
 
 3. Restart Tandoor. On the admin "System" page you should see "PDF Export"
-   listed under Plugins, and a new "Export Recipe to PDF" entry in the user
-   menu (top-right avatar dropdown).
+   listed under Plugins, and a new "PDF Export" tab under Settings.
 
 That's it - no other setup step, on the server or anywhere else.
 
