@@ -48,6 +48,13 @@
                     v-model="prefs.ingredient_grouping"
                     :items="ingredientGroupingChoices"
                     :label="$t('Ingredient_Grouping')"
+                    class="mb-2"
+                ></v-select>
+
+                <v-select
+                    v-model="prefs.note_style"
+                    :items="noteStyleChoices"
+                    :label="$t('Note_Prefix')"
                     class="mb-4"
                 ></v-select>
 
@@ -78,10 +85,12 @@ const prefs = ref({
     accent_color: '#b85c1a',
     image_style: 'cropped',
     ingredient_grouping: 'per_step',
+    note_style: 'none',
 })
 const fontChoices = ref<{ title: string, value: string }[]>([])
 const imageStyleChoices = ref<{ title: string, value: string }[]>([])
 const ingredientGroupingChoices = ref<{ title: string, value: string }[]>([])
+const noteStyleChoices = ref<{ title: string, value: string }[]>([])
 const saving = ref(false)
 const saved = ref(false)
 
@@ -105,10 +114,12 @@ async function loadPreferences() {
         accent_color: data.accent_color,
         image_style: data.image_style,
         ingredient_grouping: data.ingredient_grouping,
+        note_style: data.note_style,
     }
     fontChoices.value = toItems(data.font_choices)
     imageStyleChoices.value = toItems(data.image_style_choices)
     ingredientGroupingChoices.value = toItems(data.ingredient_grouping_choices)
+    noteStyleChoices.value = toItems(data.note_style_choices)
 }
 
 async function savePreferences() {

@@ -274,7 +274,12 @@ class PDFDocument:
             return
         content_width = PAGE_WIDTH - 2 * MARGIN
         label_size, value_size = 6.6, 10.5
-        band_height = label_size + 5 + value_size
+        # Height down to the *baseline* of the value line - drawing anything
+        # (like the closing rule) exactly at this y would sit right on top
+        # of the text, since a baseline isn't the bottom of the glyphs.
+        text_block_height = label_size + 5 + value_size
+        bottom_pad = 6  # clearance below the value baseline before the rule
+        band_height = text_block_height + bottom_pad
 
         self._ensure_space(band_height + 20)
         self.rule(color=LIGHT_BORDER, thickness=0.8, gap_before=0, gap_after=6)
@@ -285,7 +290,7 @@ class PDFDocument:
             if i:
                 self._ops.append(
                     f'0.77 0.72 0.68 RG 0.4 w {cx - 9:.2f} {top_y + 2:.2f} m '
-                    f'{cx - 9:.2f} {top_y - band_height + 4:.2f} l S'.encode('ascii')
+                    f'{cx - 9:.2f} {top_y - text_block_height:.2f} l S'.encode('ascii')
                 )
             self._draw_text(cx, top_y - label_size, label.upper(), label_size,
                              family='data', color=MUTED, letterspacing=1.4)
@@ -408,40 +413,76 @@ class PDFDocument:
 
         self._y = top_y - block_height - 16
 
-    def ingredient_checklist(self, rows, size=10):
+    def _prepare_ingredient_rows(self, rows, header_width, food_width, size, note_prefix=''):
+        """rows: list of (amount, food, note, is_header). Returns a list of
+        (amount, food_lines, note_lines, is_header, row_height) - wrapping
+        and height precomputed once, shared by ingredient_checklist() and
+        step_block() so their layout can't drift apart."""
+        row_h = size * 1.6
+        note_size = size * 0.85
+        note_line_h = note_size * 1.4
+        prepared = []
+        for amount, food, note, is_header in rows:
+            if is_header:
+                lines = self._wrap(food, size, True, header_width, family='data') if food else ['']
+                prepared.append((amount, lines, [], True, row_h * len(lines)))
+                continue
+            food_lines = self._wrap(food, size, False, food_width) if food else ['']
+            note_lines = []
+            if note:
+                note_text = f'{note_prefix} {note}'.strip() if note_prefix else note
+                note_lines = self._wrap(note_text, note_size, False, food_width, italic=True)
+            height = row_h * max(1, len(food_lines)) + note_line_h * len(note_lines)
+            prepared.append((amount, food_lines, note_lines, False, height))
+        return prepared
+
+    def _draw_ingredient_row(self, x, food_x, row_top, amount, food_lines, note_lines, is_header, box, size):
+        """Draws one already-prepared row starting at row_top; returns the
+        height consumed (matches the height _prepare_ingredient_rows
+        computed for this same row)."""
+        row_h = size * 1.6
+        note_size = size * 0.85
+        note_line_h = note_size * 1.4
+        if is_header:
+            for i, line in enumerate(food_lines):
+                self._draw_text(x, row_top - size - i * row_h, line.upper(), size, family='data', bold=True, color=MUTED, letterspacing=1.0)
+            return row_h * len(food_lines)
+
+        self._ops.append(
+            f'0.55 0.55 0.55 RG 0.75 w {x:.2f} {row_top - box - 1:.2f} {box:.2f} {box:.2f} re S'.encode('ascii')
+        )
+        if amount:
+            self._draw_text(x + box + 6, row_top - size, amount, size, family='data', bold=True, color=self.accent)
+        cursor = row_top
+        for line in food_lines:
+            self._draw_text(food_x, cursor - size, line, size)
+            cursor -= row_h
+        for note_line in note_lines:
+            self._draw_text(food_x, cursor - note_size, note_line, note_size, italic=True, color=MUTED)
+            cursor -= note_line_h
+        return row_top - cursor
+
+    def ingredient_checklist(self, rows, size=10, note_prefix=''):
         """Full-width ingredient checklist (for 'consolidated' grouping mode
         - one list for the whole recipe rather than one per step). `rows` is
-        a list of (amount_str, food_str, is_header) tuples."""
+        a list of (amount_str, food_str, note_str, is_header) tuples."""
         content_width = PAGE_WIDTH - 2 * MARGIN
         box = size * 0.75
         amount_col_w = 40
-        for amount, _food, is_header in rows:
+        for amount, _food, _note, is_header in rows:
             if not is_header and amount:
                 amount_col_w = max(amount_col_w, self._text_width(amount, size, True, family='data') + 10)
         food_x_offset = box + 8 + amount_col_w
         food_width = content_width - food_x_offset
-        row_h = size * 1.6
 
-        for amount, food, is_header in rows:
-            if is_header:
-                wrapped = self._wrap(food, size, True, content_width, family='data') if food else ['']
-                self._ensure_space(row_h * len(wrapped))
-                row_top = self._y
-                for i, line in enumerate(wrapped):
-                    self._draw_text(MARGIN, row_top - i * row_h, line.upper(), size, family='data', bold=True, color=MUTED, letterspacing=1.0)
-                self._y -= row_h * len(wrapped)
-                continue
-            wrapped = self._wrap(food, size, False, food_width) if food else ['']
-            self._ensure_space(row_h * max(1, len(wrapped)))
+        prepared = self._prepare_ingredient_rows(rows, content_width, food_width, size, note_prefix)
+        for amount, food_lines, note_lines, is_header, height in prepared:
+            self._ensure_space(height)
             row_top = self._y
-            self._ops.append(
-                f'0.55 0.55 0.55 RG 0.75 w {MARGIN:.2f} {row_top - box - 1:.2f} {box:.2f} {box:.2f} re S'.encode('ascii')
+            consumed = self._draw_ingredient_row(
+                MARGIN, MARGIN + food_x_offset, row_top, amount, food_lines, note_lines, is_header, box, size
             )
-            if amount:
-                self._draw_text(MARGIN + box + 6, row_top - size, amount, size, family='data', bold=True, color=self.accent)
-            for i, line in enumerate(wrapped):
-                self._draw_text(MARGIN + food_x_offset, row_top - size - i * row_h, line, size)
-            self._y -= row_h * max(1, len(wrapped))
+            self._y -= consumed
 
     def _step_heading_height(self, numeral_size=20):
         return numeral_size * 1.1
@@ -474,17 +515,37 @@ class PDFDocument:
     def instruction_step(self, index, step_name, instruction, size=10):
         """A step heading followed by its instruction text, full width - no
         ingredient column (for 'consolidated' grouping mode)."""
-        self._ensure_space(self._step_heading_height() + 6)
+        max_width = PAGE_WIDTH - 2 * MARGIN
+        line_h = size * 1.35
+        lines = []
+        for raw in (instruction or '').split('\n'):
+            if not raw.strip():
+                lines.append(None)
+                continue
+            lines.extend(self._wrap(raw, size, False, max_width))
+        body_height = sum(line_h * 0.6 if l is None else line_h for l in lines)
+
+        # Reserve heading + body together so a page break can't land between
+        # them, leaving the heading orphaned on the previous page (this bit
+        # the earlier version of this method, which only reserved space for
+        # the heading and let paragraph()'s own per-line page-breaking do
+        # whatever it wanted with the body).
+        self._ensure_space(self._step_heading_height() + 6 + body_height)
         self._draw_step_heading(index, step_name)
         self._y -= 6
-        self.paragraph(instruction, size=size)
+        for line in lines:
+            if line is None:
+                self._y -= line_h * 0.6
+                continue
+            self._y -= line_h
+            self._draw_text(MARGIN, self._y, line, size)
         self._y -= 8
 
-    def step_block(self, index, step_name, ingredients, instruction, size=10, left_frac=0.4, gap=18):
+    def step_block(self, index, step_name, ingredients, instruction, size=10, left_frac=0.4, gap=18, note_prefix=''):
         """A step heading, then two columns underneath it: this step's own
         ingredients as a checklist on the left, its instruction text on the
-        right. `ingredients` is a list of (amount_str, food_str, is_header)
-        tuples.
+        right. `ingredients` is a list of (amount_str, food_str, note_str,
+        is_header) tuples.
         """
         content_width = PAGE_WIDTH - 2 * MARGIN
         left_width = content_width * left_frac
@@ -497,19 +558,14 @@ class PDFDocument:
         # draw into the food name next to it (this bit the fixed-column
         # version of this layout before).
         amount_col_w = 40
-        for amount, _food, is_header in ingredients:
+        for amount, _food, _note, is_header in ingredients:
             if not is_header and amount:
                 amount_col_w = max(amount_col_w, self._text_width(amount, size, True, family='data') + 10)
         food_x_offset = box + 8 + amount_col_w
         food_width = max(20, left_width - food_x_offset)
 
-        row_h = size * 1.6
-        left_rows = []
-        for amount, food, is_header in ingredients:
-            width = left_width if is_header else food_width
-            wrapped = self._wrap(food, size, is_header, width) if food else ['']
-            left_rows.append((amount, wrapped, is_header))
-        left_height = sum(row_h * max(1, len(w)) for _, w, _ in left_rows)
+        prepared = self._prepare_ingredient_rows(ingredients, left_width, food_width, size, note_prefix)
+        left_height = sum(h for *_, h in prepared)
 
         line_h = size * 1.35
         right_lines = []
@@ -530,20 +586,11 @@ class PDFDocument:
         top_y = self._y
 
         y = top_y
-        for amount, wrapped, is_header in left_rows:
-            row_top = y
-            if is_header:
-                for i, line in enumerate(wrapped):
-                    self._draw_text(MARGIN, row_top - size - i * row_h, line.upper(), size, family='data', bold=True, color=MUTED, letterspacing=1.0)
-            else:
-                self._ops.append(
-                    f'0.55 0.55 0.55 RG 0.75 w {MARGIN:.2f} {row_top - box - 1:.2f} {box:.2f} {box:.2f} re S'.encode('ascii')
-                )
-                if amount:
-                    self._draw_text(MARGIN + box + 6, row_top - size, amount, size, family='data', bold=True, color=self.accent)
-                for i, line in enumerate(wrapped):
-                    self._draw_text(MARGIN + food_x_offset, row_top - size - i * row_h, line, size)
-            y -= row_h * max(1, len(wrapped))
+        for amount, food_lines, note_lines, is_header, _h in prepared:
+            consumed = self._draw_ingredient_row(
+                MARGIN, MARGIN + food_x_offset, y, amount, food_lines, note_lines, is_header, box, size
+            )
+            y -= consumed
 
         y = top_y
         for line in right_lines:

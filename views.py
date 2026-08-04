@@ -32,18 +32,21 @@ def _hex_to_rgb(hex_color):
 
 
 def _get_preferences(request):
-    """(font, accent_rgb, image_style, ingredient_grouping) for this user,
-    falling back to defaults if they've never saved preferences (or the
-    settings table somehow isn't there, e.g. mid-upgrade before migrations
-    ran)."""
+    """(font, accent_rgb, image_style, ingredient_grouping, note_prefix) for
+    this user, falling back to defaults if they've never saved preferences
+    (or the settings table somehow isn't there, e.g. mid-upgrade before
+    migrations ran)."""
     try:
-        from .models import PdfExportSettings
+        from .models import NOTE_PREFIX_TEXT, PdfExportSettings
         obj = PdfExportSettings.objects.filter(user=request.user).first()
     except Exception:
         obj = None
     if not obj:
-        return 'serif', ACCENT, 'cropped', 'per_step'
-    return obj.font, _hex_to_rgb(obj.accent_color), obj.image_style, obj.ingredient_grouping
+        return 'serif', ACCENT, 'cropped', 'per_step', ''
+    return (
+        obj.font, _hex_to_rgb(obj.accent_color), obj.image_style, obj.ingredient_grouping,
+        NOTE_PREFIX_TEXT.get(obj.note_style, ''),
+    )
 
 
 def _recipe_image_jpeg(recipe, image_style='cropped', max_size=900):
@@ -87,17 +90,19 @@ def _fmt_amount(value):
 
 
 def _ingredient_tuple(ingredient):
-    """(amount, food, is_header) - the shape step_block() expects."""
+    """(amount, food, note, is_header) - the shape step_block()/
+    ingredient_checklist() expect. The note is kept separate rather than
+    baked into the food string in parentheses, so it can be styled
+    (smaller, muted, optionally prefixed) differently from the food name."""
     if ingredient.is_header:
-        return '', ingredient.note or '', True
+        return '', ingredient.note or '', '', True
     if ingredient.no_amount:
         amount = ''
     else:
         unit = f' {ingredient.unit.name}' if ingredient.unit else ''
         amount = f'{_fmt_amount(ingredient.amount)}{unit}'
     food = ingredient.food.name if ingredient.food else ''
-    note = f' ({ingredient.note})' if ingredient.note else ''
-    return amount, f'{food}{note}', False
+    return amount, food, ingredient.note or '', False
 
 
 @login_required
@@ -123,6 +128,7 @@ def settings_api(request):
         FONT_CHOICES,
         IMAGE_STYLE_CHOICES,
         INGREDIENT_GROUPING_CHOICES,
+        NOTE_STYLE_CHOICES,
         PdfExportSettings,
     )
 
@@ -141,15 +147,19 @@ def settings_api(request):
             obj.image_style = data['image_style']
         if data.get('ingredient_grouping') in dict(INGREDIENT_GROUPING_CHOICES):
             obj.ingredient_grouping = data['ingredient_grouping']
+        if data.get('note_style') in dict(NOTE_STYLE_CHOICES):
+            obj.note_style = data['note_style']
         obj.save()
     return JsonResponse({
         'font': obj.font,
         'accent_color': obj.accent_color,
         'image_style': obj.image_style,
         'ingredient_grouping': obj.ingredient_grouping,
+        'note_style': obj.note_style,
         'font_choices': FONT_CHOICES,
         'image_style_choices': IMAGE_STYLE_CHOICES,
         'ingredient_grouping_choices': INGREDIENT_GROUPING_CHOICES,
+        'note_style_choices': NOTE_STYLE_CHOICES,
     })
 
 
@@ -160,7 +170,7 @@ def export_recipe_pdf(request, pk):
     if not _user_can_view_recipe(request, recipe):
         raise PermissionDenied()
 
-    font, accent, image_style, ingredient_grouping = _get_preferences(request)
+    font, accent, image_style, ingredient_grouping, note_prefix = _get_preferences(request)
 
     steps = recipe.steps.order_by('order', 'pk').prefetch_related('ingredients__food', 'ingredients__unit')
 
@@ -199,14 +209,14 @@ def export_recipe_pdf(request, pk):
         ]
         if all_ingredients:
             doc.heading('Ingredients')
-            doc.ingredient_checklist(all_ingredients)
+            doc.ingredient_checklist(all_ingredients, note_prefix=note_prefix)
         doc.heading('Instructions')
         for i, step in enumerate(steps, start=1):
             doc.instruction_step(i, step.name, step.instruction)
     else:
         for i, step in enumerate(steps, start=1):
             ingredients = [_ingredient_tuple(ingredient) for ingredient in step.ingredients.all()]
-            doc.step_block(i, step.name, ingredients, step.instruction)
+            doc.step_block(i, step.name, ingredients, step.instruction, note_prefix=note_prefix)
 
     if recipe.nutrition:
         doc.heading('Nutrition')

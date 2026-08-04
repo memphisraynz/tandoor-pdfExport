@@ -68,8 +68,11 @@ metrics. Useful if file size matters more than typography to you.
 
 Stored per-user in a small `PdfExportSettings` model (this plugin's only
 database table): font (serif/helvetica/times/courier), accent color
-(hex), image style (cropped/full), and ingredient grouping (grouped by
-step vs. one combined list). The settings form in the Vue page talks to
+(hex), image style (cropped/full), ingredient grouping (grouped by step
+vs. one combined list), and note prefix (none/"Note:"/"NB:" - an
+ingredient's note is always shown on its own smaller, muted, italic line
+under the ingredient rather than inline in parentheses; this only
+controls whether it's prefixed). The settings form in the Vue page talks to
 a plain JSON endpoint at `/pdf-export/api/settings/` (GET to read, POST
 to save) - this is hand-written, not part of Tandoor's generated API
 client (which has no knowledge of plugin endpoints), so it's the one
