@@ -3,7 +3,7 @@ from io import BytesIO
 from django.contrib.auth.decorators import login_required
 from django.core.exceptions import PermissionDenied
 from django.http import HttpResponse
-from django.shortcuts import get_object_or_404
+from django.shortcuts import get_object_or_404, render
 
 from cookbook.helper.permission_helper import has_group_permission
 from cookbook.models import Recipe
@@ -54,6 +54,22 @@ def _ingredient_row(ingredient):
     food = ingredient.food.name if ingredient.food else ''
     note = f' ({ingredient.note})' if ingredient.note else ''
     return amount, f'{food}{note}'
+
+
+@login_required
+def recipe_picker(request):
+    """Plain server-rendered search page - deliberately not part of the Vue
+    frontend. It works through the exact same request/response path as
+    export_recipe_pdf below (already confirmed working), so it doesn't
+    depend on the Vite build, PLUGINS_BUILD, collectstatic, or any browser/
+    service-worker/CDN caching of the SPA bundle.
+    """
+    query = request.GET.get('q', '').strip()
+    recipes = []
+    if query:
+        candidates = Recipe.objects.filter(space=request.space, name__icontains=query).order_by('name')[:50]
+        recipes = [r for r in candidates if _user_can_view_recipe(request, r)]
+    return render(request, 'pdf_export_plugin/recipe_picker.html', {'query': query, 'recipes': recipes})
 
 
 @login_required
