@@ -32,17 +32,18 @@ def _hex_to_rgb(hex_color):
 
 
 def _get_preferences(request):
-    """(font, accent_rgb, image_style) for this user, falling back to
-    defaults if they've never saved preferences (or the settings table
-    somehow isn't there, e.g. mid-upgrade before migrations ran)."""
+    """(font, accent_rgb, image_style, ingredient_grouping) for this user,
+    falling back to defaults if they've never saved preferences (or the
+    settings table somehow isn't there, e.g. mid-upgrade before migrations
+    ran)."""
     try:
         from .models import PdfExportSettings
         obj = PdfExportSettings.objects.filter(user=request.user).first()
     except Exception:
         obj = None
     if not obj:
-        return 'helvetica', ACCENT, 'cropped'
-    return obj.font, _hex_to_rgb(obj.accent_color), obj.image_style
+        return 'serif', ACCENT, 'cropped', 'per_step'
+    return obj.font, _hex_to_rgb(obj.accent_color), obj.image_style, obj.ingredient_grouping
 
 
 def _recipe_image_jpeg(recipe, image_style='cropped', max_size=900):
@@ -118,7 +119,12 @@ def recipe_picker(request):
 @login_required
 @require_http_methods(['GET', 'POST'])
 def settings_api(request):
-    from .models import FONT_CHOICES, IMAGE_STYLE_CHOICES, PdfExportSettings
+    from .models import (
+        FONT_CHOICES,
+        IMAGE_STYLE_CHOICES,
+        INGREDIENT_GROUPING_CHOICES,
+        PdfExportSettings,
+    )
 
     obj, _ = PdfExportSettings.objects.get_or_create(user=request.user)
     if request.method == 'POST':
@@ -133,13 +139,17 @@ def settings_api(request):
             obj.accent_color = accent if accent.startswith('#') else f'#{accent}'
         if data.get('image_style') in dict(IMAGE_STYLE_CHOICES):
             obj.image_style = data['image_style']
+        if data.get('ingredient_grouping') in dict(INGREDIENT_GROUPING_CHOICES):
+            obj.ingredient_grouping = data['ingredient_grouping']
         obj.save()
     return JsonResponse({
         'font': obj.font,
         'accent_color': obj.accent_color,
         'image_style': obj.image_style,
+        'ingredient_grouping': obj.ingredient_grouping,
         'font_choices': FONT_CHOICES,
         'image_style_choices': IMAGE_STYLE_CHOICES,
+        'ingredient_grouping_choices': INGREDIENT_GROUPING_CHOICES,
     })
 
 
@@ -150,7 +160,7 @@ def export_recipe_pdf(request, pk):
     if not _user_can_view_recipe(request, recipe):
         raise PermissionDenied()
 
-    font, accent, image_style = _get_preferences(request)
+    font, accent, image_style, ingredient_grouping = _get_preferences(request)
 
     steps = recipe.steps.order_by('order', 'pk').prefetch_related('ingredients__food', 'ingredients__unit')
 
@@ -183,9 +193,23 @@ def export_recipe_pdf(request, pk):
         image_box=image_box,
     )
 
-    for i, step in enumerate(steps, start=1):
-        ingredients = [_ingredient_tuple(ingredient) for ingredient in step.ingredients.all()]
-        doc.step_block(i, step.name, ingredients, step.instruction)
+    if ingredient_grouping == 'consolidated':
+        all_ingredients = [
+            _ingredient_tuple(ingredient)
+            for step in steps
+            for ingredient in step.ingredients.all()
+        ]
+        if all_ingredients:
+            doc.heading('Ingredients', size=13)
+            doc.ingredient_checklist(all_ingredients)
+            doc.rule()
+        doc.heading('Instructions', size=13)
+        for i, step in enumerate(steps, start=1):
+            doc.instruction_step(i, step.name, step.instruction)
+    else:
+        for i, step in enumerate(steps, start=1):
+            ingredients = [_ingredient_tuple(ingredient) for ingredient in step.ingredients.all()]
+            doc.step_block(i, step.name, ingredients, step.instruction)
 
     if recipe.nutrition:
         doc.rule()

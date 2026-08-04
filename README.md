@@ -21,37 +21,57 @@ if/elif chain of built-in "Integration" classes) with no plugin
 extension point at all - same limitation as the recipe's own "3 dot"
 menu below.
 
-PDF generation (`pdf_writer.py`) is hand-rolled directly against the PDF
-file format using only the Python standard library, plus Pillow for
-image conversion - which Tandoor already ships. There is nothing to
-install: no pip package, no system library (no Pango/Cairo/etc.), no
-custom Docker image. `git pull` + restart is the entire deployment step.
+PDF generation (`pdf_writer.py` + `ttf_font.py`) is hand-rolled directly
+against the PDF file format using only the Python standard library, plus
+Pillow for image conversion - which Tandoor already ships. There is
+nothing to install: no pip package, no system library (no Pango/Cairo/
+etc.), no custom Docker image. `git pull` + restart is the entire
+deployment step.
 
 This is a deliberate trade-off over using a real PDF library (WeasyPrint,
 xhtml2pdf, etc.): those all either need native system libraries or a
 third-party pip package installed inside the container, which doesn't
-survive a plain restart/recreate without a custom image. Word-wrapping
-uses an approximate per-character width table rather than real font
-metrics, so line breaks are close-enough rather than typographically
-perfect - a cosmetic trade-off, not a correctness one. Text outside
-Latin-1/WinAnsiEncoding (e.g. CJK or Cyrillic recipe names) will render
-as "?", since embedding real Unicode fonts is out of scope for this.
-Font choice is one of three standard-14 PDF font families (Helvetica,
-Times, Courier) - again no embedding needed, so no new dependency.
+survive a plain restart/recreate without a custom image.
+
+### Fonts
+
+Default rendering mode ("Serif" in appearance settings) embeds four real
+TrueType fonts - Gloock (titles/step numerals), Lora (body prose, regular/
+italic/bold), and IBM Plex Mono (quantities, labels, footer) - as proper
+`Type0`/`Identity-H` CID fonts, parsed and embedded with nothing but
+`struct` from the standard library (`ttf_font.py`; no font-parsing
+library either). This means genuinely accurate word-wrap (real glyph
+metrics, not an approximation) and a much wider character repertoire
+than a moment ago - Cyrillic, fraction glyphs, most of Latin Extended -
+with searchable/copyable text via an embedded `/ToUnicode` CMap. All
+four font files live in `fonts/` under the SIL Open Font License
+(license text alongside each, `fonts/OFL-*.txt`); only fonts actually
+used by a given recipe get embedded, so a recipe with no italic text
+doesn't pay for `Lora-Italic.ttf`. A typical recipe with one photo runs
+roughly 300-400 KB. If the font files are ever missing or fail to parse
+for any reason, this falls back automatically to the standard-14 option
+below rather than failing the export.
+
+The three other font choices (Helvetica, Times, Courier) are the
+original standard-14 PDF fonts - no embedding, much smaller files,
+WinAnsiEncoding (~cp1252) only so non-Latin-1 text (CJK, Cyrillic)
+renders as "?", and word-wrap is an approximation rather than real
+metrics. Useful if file size matters more than typography to you.
 
 ## Appearance settings
 
 Stored per-user in a small `PdfExportSettings` model (this plugin's only
-database table): font family, accent color (hex), and image style
-(cropped/full). The settings form in the Vue page talks to a plain JSON
-endpoint at `/pdf-export/api/settings/` (GET to read, POST to save) -
-this is hand-written, not part of Tandoor's generated API client (which
-has no knowledge of plugin endpoints), so it's the one part of this
-plugin I haven't been able to verify end-to-end myself. If saving
-preferences doesn't work, check the browser console for a CSRF-related
-error first - the POST manually attaches Django's `csrftoken` cookie
-value as an `X-CSRFToken` header, which assumes Tandoor hasn't renamed
-that cookie from Django's default.
+database table): font (serif/helvetica/times/courier), accent color
+(hex), image style (cropped/full), and ingredient grouping (grouped by
+step vs. one combined list). The settings form in the Vue page talks to
+a plain JSON endpoint at `/pdf-export/api/settings/` (GET to read, POST
+to save) - this is hand-written, not part of Tandoor's generated API
+client (which has no knowledge of plugin endpoints), so it's the one
+part of this plugin I haven't been able to verify end-to-end myself. If
+saving preferences doesn't work, check the browser console for a
+CSRF-related error first - the POST manually attaches Django's
+`csrftoken` cookie value as an `X-CSRFToken` header, which assumes
+Tandoor hasn't renamed that cookie from Django's default.
 
 ## How Tandoor plugins work (short version)
 
@@ -81,7 +101,7 @@ string - so it works no matter what you name the folder you clone into).
 
 3. Restart Tandoor. On the admin "System" page you should see "PDF Export"
    listed under Plugins, and a new "PDF Export" tab under Settings (and
-   in the user avatar menu). The plugin's one database migration runs
+   in the user avatar menu). The plugin's database migrations run
    automatically as part of Tandoor's normal `manage.py migrate` on boot
    - no separate migration step needed.
 
@@ -96,3 +116,7 @@ That's it - no other setup step, on the server or anywhere else.
 - No automated tests / CI yet - this is a first pass, verify PDF output
   against a couple of real recipes (with/without image, with/without
   nutrition info, with ingredient group headers) before relying on it.
+- In "Serif" mode, a character missing from the relevant font (e.g. a
+  script none of Gloock/Lora/IBM Plex Mono cover) renders as blank rather
+  than "?" or a tofu box - silent, not a crash, but worth knowing if a
+  recipe name uses an unusual script.
