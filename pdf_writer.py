@@ -35,8 +35,16 @@ MARGIN = 56.7         # ~2cm
 
 BLACK = (0.13, 0.13, 0.13)
 MUTED = (0.48, 0.48, 0.48)
+UMBER = (0.29, 0.21, 0.15)       # step-label color - darker/warmer than MUTED
 ACCENT = (0.72, 0.36, 0.10)      # warm terracotta - default accent color
 LIGHT_BORDER = (0.85, 0.82, 0.78)
+
+
+def _tint(color, amount=0.55):
+    """`color` blended toward white by `amount` - used for a light rule in
+    the accent color under section headings, adapting automatically to
+    whatever accent color the user picks."""
+    return tuple(c + (1 - c) * amount for c in color)
 
 # Standard-14 PDF fonts - fallback mode, no embedding needed.
 FONT_FAMILIES = {
@@ -162,10 +170,10 @@ def _color_op(color, op):
     return f'{r:.3f} {g:.3f} {b:.3f} {op}'.encode('ascii')
 
 
-def _text_op(x, y, text, size, font, color):
+def _text_op(x, y, text, size, font, color, letterspacing=0.0):
     """Standard-14 fallback: a literal WinAnsi string in parens."""
     return (
-        _color_op(color, 'rg') + b' BT /' + font.encode('ascii')
+        _color_op(color, 'rg') + b' BT ' + f'{letterspacing:.2f} Tc /'.encode('ascii') + font.encode('ascii')
         + f' {size:.1f} Tf {x:.2f} {y:.2f} Td ('.encode('ascii')
         + _pdf_text_bytes(text) + b') Tj ET'
     )
@@ -206,18 +214,20 @@ class PDFDocument:
         if self._y - height < MARGIN:
             self._new_page()
 
-    def _text_width(self, text, size, bold=False, italic=False, family='body'):
+    def _text_width(self, text, size, bold=False, italic=False, family='body', letterspacing=0.0):
         if self.use_ttf:
             role = _resolve_role(family, bold, italic)
-            return self._ttf_fonts[role].text_width(text, size)
-        return _approx_text_width(text, size, bold, self._monospace)
+            base = self._ttf_fonts[role].text_width(text, size)
+        else:
+            base = _approx_text_width(text, size, bold, self._monospace)
+        return base + max(0, len(text) - 1) * letterspacing
 
-    def _wrap(self, text, size, bold, max_width, italic=False, family='body'):
+    def _wrap(self, text, size, bold, max_width, italic=False, family='body', letterspacing=0.0):
         return _wrap_generic(
-            text, lambda s: self._text_width(s, size, bold, italic, family), max_width
+            text, lambda s: self._text_width(s, size, bold, italic, family, letterspacing), max_width
         )
 
-    def _text_bytes(self, x, y, text, size, family='body', bold=False, italic=False, color=None):
+    def _text_bytes(self, x, y, text, size, family='body', bold=False, italic=False, color=None, letterspacing=0.0):
         color = color if color is not None else BLACK
         if self.use_ttf:
             role = _resolve_role(family, bold, italic)
@@ -234,23 +244,55 @@ class PDFDocument:
             hex_str = ''.join(f'{g:04X}' for g in gids)
             pdf_name = ROLE_PDF_NAMES[role]
             return (
-                _color_op(color, 'rg') + b' BT /' + pdf_name.encode('ascii')
+                _color_op(color, 'rg') + b' BT ' + f'{letterspacing:.2f} Tc /'.encode('ascii') + pdf_name.encode('ascii')
                 + f' {size:.1f} Tf {x:.2f} {y:.2f} Td <'.encode('ascii')
                 + hex_str.encode('ascii') + b'> Tj ET'
             )
         font_name = 'F2' if bold else ('F3' if italic else 'F1')
-        return _text_op(x, y, text, size, font_name, color)
+        return _text_op(x, y, text, size, font_name, color, letterspacing)
 
-    def _draw_text(self, x, y, text, size, family='body', bold=False, italic=False, color=None):
-        self._ops.append(self._text_bytes(x, y, text, size, family, bold, italic, color))
+    def _draw_text(self, x, y, text, size, family='body', bold=False, italic=False, color=None, letterspacing=0.0):
+        self._ops.append(self._text_bytes(x, y, text, size, family, bold, italic, color, letterspacing))
 
     # -- public layout API -----------------------------------------------------
-    def heading(self, text, size=15, color=None, family='display'):
+    def heading(self, text, size=8.2, color=None, gap_before=16):
+        """A section label - small, bold, letterspaced, uppercase, with a
+        rule underneath (a tint of the accent color)."""
         color = color if color is not None else self.accent
-        self._ensure_space(size * 1.8)
+        self._ensure_space(gap_before + size * 1.6 + 10)
+        self._y -= gap_before
         self._y -= size
-        self._draw_text(MARGIN, self._y, text, size, family=family, bold=True, color=color)
-        self._y -= size * 0.7
+        self._draw_text(MARGIN, self._y, text.upper(), size, family='data', bold=True, color=color, letterspacing=2.2)
+        self._y -= 5
+        self.rule(color=_tint(color, 0.35), thickness=1.0, gap_before=0, gap_after=10)
+
+    def spec_band(self, cells):
+        """A horizontal row of equal-width labeled cells (e.g. Servings /
+        Prep / Bake) between two rules, with thin dividers between cells.
+        `cells` is a list of (label, value) tuples."""
+        if not cells:
+            return
+        content_width = PAGE_WIDTH - 2 * MARGIN
+        label_size, value_size = 6.6, 10.5
+        band_height = label_size + 5 + value_size
+
+        self._ensure_space(band_height + 20)
+        self.rule(color=LIGHT_BORDER, thickness=0.8, gap_before=0, gap_after=6)
+        top_y = self._y
+        cell_w = content_width / len(cells)
+        for i, (label, value) in enumerate(cells):
+            cx = MARGIN + i * cell_w
+            if i:
+                self._ops.append(
+                    f'0.77 0.72 0.68 RG 0.4 w {cx - 9:.2f} {top_y + 2:.2f} m '
+                    f'{cx - 9:.2f} {top_y - band_height + 4:.2f} l S'.encode('ascii')
+                )
+            self._draw_text(cx, top_y - label_size, label.upper(), label_size,
+                             family='data', color=MUTED, letterspacing=1.4)
+            self._draw_text(cx, top_y - label_size - 5 - value_size, value.upper(), value_size,
+                             family='data', bold=True, color=BLACK, letterspacing=0.2)
+        self._y = top_y - band_height
+        self.rule(color=LIGHT_BORDER, thickness=0.4, gap_before=0, gap_after=14)
 
     def paragraph(self, text, size=10, bold=False, italic=False, color=None, family='body'):
         max_width = PAGE_WIDTH - 2 * MARGIN
@@ -306,21 +348,22 @@ class PDFDocument:
         self._place_image(jpeg_bytes, width, height, MARGIN, self._y, w, h, border_color)
         self._y -= gap_after
 
-    def header_block(self, title, meta_text, description, image=None, image_box=(190, 150), title_size=20):
-        """Title/meta/description on the left, an image (already cropped by
-        the caller to image_box's aspect ratio) on the right. `image` is
-        (jpeg_bytes, real_width, real_height) or None.
+    def header_block(self, title, description, image=None, image_box=(190, 150),
+                      title_size=26, min_title_size=15):
+        """Title/description on the left, an image (already cropped by the
+        caller to image_box's aspect ratio) on the right. `image` is
+        (jpeg_bytes, real_width, real_height) or None. Title size auto-
+        shrinks to fit the left column rather than wrapping/overflowing.
         """
         content_width = PAGE_WIDTH - 2 * MARGIN
         gap = 20
         img_w, img_h = image_box if image else (0, 0)
         left_width = content_width - (img_w + gap if image else 0)
 
-        title_line_h = title_size * 1.25
+        while title_size > min_title_size and self._text_width(title, title_size, True, family='display') > left_width:
+            title_size -= 0.5
+        title_line_h = title_size * 1.2
         title_lines = self._wrap(title, title_size, True, left_width, family='display')
-
-        meta_size, meta_line_h = 9.5, 9.5 * 1.4
-        meta_lines = self._wrap(meta_text, meta_size, False, left_width, family='data') if meta_text else []
 
         desc_size, desc_line_h = 10.5, 10.5 * 1.35
         desc_lines = []
@@ -332,7 +375,7 @@ class PDFDocument:
             desc_lines.extend(self._wrap(raw, desc_size, False, left_width, italic=True))
 
         left_height = (
-            len(title_lines) * title_line_h + 8 + len(meta_lines) * meta_line_h + 10
+            len(title_lines) * title_line_h + 6 + 10
             + sum(desc_line_h * 0.6 if l is None else desc_line_h for l in desc_lines)
         )
         block_height = max(left_height, img_h)
@@ -344,10 +387,11 @@ class PDFDocument:
         for line in title_lines:
             y -= title_line_h
             self._draw_text(MARGIN, y, line, title_size, family='display', bold=True, color=self.accent)
-        y -= 8
-        for line in meta_lines:
-            y -= meta_line_h
-            self._draw_text(MARGIN, y, line, meta_size, family='data', color=MUTED)
+        y -= 6
+        self._ops.append(
+            f'{self.accent[0]:.3f} {self.accent[1]:.3f} {self.accent[2]:.3f} RG 1.7 w '
+            f'{MARGIN:.2f} {y:.2f} m {MARGIN + 60:.2f} {y:.2f} l S'.encode('ascii')
+        )
         y -= 10
         for line in desc_lines:
             if line is None:
@@ -384,7 +428,7 @@ class PDFDocument:
                 self._ensure_space(row_h * len(wrapped))
                 row_top = self._y
                 for i, line in enumerate(wrapped):
-                    self._draw_text(MARGIN, row_top - i * row_h, line, size, family='data', bold=True, color=MUTED)
+                    self._draw_text(MARGIN, row_top - i * row_h, line.upper(), size, family='data', bold=True, color=MUTED, letterspacing=1.0)
                 self._y -= row_h * len(wrapped)
                 continue
             wrapped = self._wrap(food, size, False, food_width) if food else ['']
@@ -399,14 +443,40 @@ class PDFDocument:
                 self._draw_text(MARGIN + food_x_offset, row_top - size - i * row_h, line, size)
             self._y -= row_h * max(1, len(wrapped))
 
+    def _step_heading_height(self, numeral_size=20):
+        return numeral_size * 1.1
+
+    def _draw_step_heading(self, index, step_name, numeral_size=20, label_size=8.3, right_edge=None):
+        """A big accent-colored numeral, a letterspaced bold label beside
+        it, and a thin rule running to `right_edge` (defaults to the page's
+        right margin)."""
+        right_edge = right_edge if right_edge is not None else PAGE_WIDTH - MARGIN
+        self._y -= numeral_size * 0.78
+        num_baseline = self._y
+        self._draw_text(MARGIN, num_baseline, str(index), numeral_size, family='display', color=self.accent)
+        num_w = self._text_width(str(index), numeral_size, family='display')
+
+        label_x = MARGIN + num_w + 8
+        label = (step_name or f'Step {index}').upper()
+        label_baseline = num_baseline + numeral_size * 0.22
+        self._draw_text(label_x, label_baseline, label, label_size, family='data', bold=True, color=UMBER, letterspacing=2.0)
+        label_w = self._text_width(label, label_size, True, family='data', letterspacing=2.0)
+
+        rule_x = label_x + label_w + 8
+        if rule_x < right_edge:
+            rule_y = label_baseline + label_size * 0.32
+            self._ops.append(
+                f'{LIGHT_BORDER[0]:.3f} {LIGHT_BORDER[1]:.3f} {LIGHT_BORDER[2]:.3f} RG 0.4 w '
+                f'{rule_x:.2f} {rule_y:.2f} m {right_edge:.2f} {rule_y:.2f} l S'.encode('ascii')
+            )
+        self._y = num_baseline - numeral_size * 0.32
+
     def instruction_step(self, index, step_name, instruction, size=10):
         """A step heading followed by its instruction text, full width - no
         ingredient column (for 'consolidated' grouping mode)."""
-        label = f'{index}. {step_name}' if step_name else f'Step {index}'
-        self._ensure_space(13 * 1.6)
-        self._y -= 13
-        self._draw_text(MARGIN, self._y, label, 13, family='display', bold=True, color=self.accent)
-        self._y -= 13 * 0.4
+        self._ensure_space(self._step_heading_height() + 6)
+        self._draw_step_heading(index, step_name)
+        self._y -= 6
         self.paragraph(instruction, size=size)
         self._y -= 8
 
@@ -420,8 +490,6 @@ class PDFDocument:
         left_width = content_width * left_frac
         right_width = content_width - left_width - gap
         right_x = MARGIN + left_width + gap
-
-        heading_size = 12.5
 
         box = size * 0.75
         # Sized to the longest amount actually in this step rather than a
@@ -453,14 +521,10 @@ class PDFDocument:
         right_height = sum(line_h * 0.6 if l is None else line_h for l in right_lines)
 
         body_height = max(left_height, right_height)
-        total_height = heading_size * 1.3 + 6 + body_height
+        total_height = self._step_heading_height() + 6 + body_height
 
         self._ensure_space(total_height)
-
-        label = f'{index}. {step_name}' if step_name else f'Step {index}'
-        self._y -= heading_size
-        self._draw_text(MARGIN, self._y, label, heading_size, family='display', bold=True, color=self.accent)
-        self._y -= heading_size * 0.3
+        self._draw_step_heading(index, step_name)
         self._y -= 6
 
         top_y = self._y
@@ -470,7 +534,7 @@ class PDFDocument:
             row_top = y
             if is_header:
                 for i, line in enumerate(wrapped):
-                    self._draw_text(MARGIN, row_top - size - i * row_h, line, size, family='data', bold=True, color=MUTED)
+                    self._draw_text(MARGIN, row_top - size - i * row_h, line.upper(), size, family='data', bold=True, color=MUTED, letterspacing=1.0)
             else:
                 self._ops.append(
                     f'0.55 0.55 0.55 RG 0.75 w {MARGIN:.2f} {row_top - box - 1:.2f} {box:.2f} {box:.2f} re S'.encode('ascii')

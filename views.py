@@ -164,13 +164,11 @@ def export_recipe_pdf(request, pk):
 
     steps = recipe.steps.order_by('order', 'pk').prefetch_related('ingredients__food', 'ingredients__unit')
 
-    meta_bits = [f'Servings: {recipe.servings}']
-    if recipe.servings_text:
-        meta_bits.append(recipe.servings_text)
+    spec_cells = [('Servings', f'{recipe.servings}{" " + recipe.servings_text if recipe.servings_text else ""}')]
     if recipe.working_time:
-        meta_bits.append(f'Prep: {recipe.working_time} min')
+        spec_cells.append(('Prep', f'{recipe.working_time} min'))
     if recipe.waiting_time:
-        meta_bits.append(f'Cook/Wait: {recipe.waiting_time} min')
+        spec_cells.append(('Bake', f'{recipe.waiting_time} min'))
 
     image = _recipe_image_jpeg(recipe, image_style=image_style)
 
@@ -187,11 +185,11 @@ def export_recipe_pdf(request, pk):
     doc = PDFDocument(footer_label=recipe.name, accent=accent, font=font)
     doc.header_block(
         recipe.name,
-        '   •   '.join(meta_bits),
         recipe.description,
         image=image,
         image_box=image_box,
     )
+    doc.spec_band(spec_cells)
 
     if ingredient_grouping == 'consolidated':
         all_ingredients = [
@@ -200,10 +198,9 @@ def export_recipe_pdf(request, pk):
             for ingredient in step.ingredients.all()
         ]
         if all_ingredients:
-            doc.heading('Ingredients', size=13)
+            doc.heading('Ingredients')
             doc.ingredient_checklist(all_ingredients)
-            doc.rule()
-        doc.heading('Instructions', size=13)
+        doc.heading('Instructions')
         for i, step in enumerate(steps, start=1):
             doc.instruction_step(i, step.name, step.instruction)
     else:
@@ -212,8 +209,7 @@ def export_recipe_pdf(request, pk):
             doc.step_block(i, step.name, ingredients, step.instruction)
 
     if recipe.nutrition:
-        doc.rule()
-        doc.heading('Nutrition', size=13)
+        doc.heading('Nutrition')
         doc.two_column_line('Calories', _fmt_amount(recipe.nutrition.calories), size=10)
         doc.two_column_line('Fats', f'{_fmt_amount(recipe.nutrition.fats)} g', size=10)
         doc.two_column_line('Carbohydrates', f'{_fmt_amount(recipe.nutrition.carbohydrates)} g', size=10)

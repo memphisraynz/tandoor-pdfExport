@@ -7,13 +7,19 @@ directly at `/pdf-export/` (a plain server-rendered page, no Vue/JS
 build involved) as a fallback that doesn't depend on the frontend build
 succeeding.
 
-The PDF itself: title/description/meta on the left, the recipe photo on
-the right (cropped to a fixed box by default, so a full-resolution
-portrait or landscape photo doesn't distort or letterbox oddly - or
-choose "Full image" in the appearance settings to fit it uncropped
-instead). Each step shows its own ingredient checklist next to its own
-instructions, rather than one big ingredients list followed by one big
-instructions list.
+The PDF itself: an auto-fitting title (shrinks to fit rather than
+overflowing) with description on the left, the recipe photo on the right
+(cropped to a fixed box by default, so a full-resolution portrait or
+landscape photo doesn't distort or letterbox oddly - or choose "Full
+image" in the appearance settings to fit it uncropped instead), then a
+labeled spec band (Servings / Prep / Bake, whichever the recipe has).
+Section labels (Ingredients/Instructions/Nutrition) are small,
+letterspaced, uppercase, with a rule in a tint of the accent color
+underneath; each step gets a large accent-colored numeral next to a
+letterspaced label and a rule out to the page edge. Each step shows its
+own ingredient checklist next to its own instructions by default, rather
+than one big ingredients list followed by one big instructions list -
+switchable in appearance settings ("Ingredient Grouping").
 
 It's under Settings rather than the existing recipe Import/Export
 section because that section is a hardcoded core mechanism (a fixed
