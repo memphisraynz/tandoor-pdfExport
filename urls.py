@@ -1,7 +1,7 @@
 from django.urls import path
 from rest_framework import routers
 
-from recipes.plugins.pdf_export_plugin import views
+from . import views
 
 # Unused but required - see the comment on api_router_name in apps.py.
 pdf_export_router = routers.DefaultRouter()
