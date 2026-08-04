@@ -2,5 +2,11 @@
     "Export_Recipe_PDF": "Export Recipe to PDF",
     "Export_Recipe_PDF_Help": "Search for a recipe below and download it as a formatted PDF file.",
     "Recipe": "Recipe",
-    "Download_PDF": "Download PDF"
+    "Download_PDF": "Download PDF",
+    "PDF_Appearance": "PDF Appearance",
+    "Font": "Font",
+    "Accent_Color": "Accent Color",
+    "Image_Style": "Image Style",
+    "Save": "Save",
+    "Saved": "Saved"
 }

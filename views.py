@@ -1,14 +1,18 @@
+import json
 from io import BytesIO
 
 from django.contrib.auth.decorators import login_required
 from django.core.exceptions import PermissionDenied
-from django.http import HttpResponse
+from django.http import HttpResponse, JsonResponse
 from django.shortcuts import get_object_or_404, render
+from django.views.decorators.http import require_http_methods
 
 from cookbook.helper.permission_helper import has_group_permission
 from cookbook.models import Recipe
 
-from .pdf_writer import ACCENT, MUTED, PDFDocument, text_width
+from .pdf_writer import ACCENT, PDFDocument
+
+IMAGE_BOX = (190, 150)
 
 
 def _user_can_view_recipe(request, recipe):
@@ -17,7 +21,31 @@ def _user_can_view_recipe(request, recipe):
     return has_group_permission(request.user, ['guest', 'user'])
 
 
-def _recipe_image_jpeg(recipe):
+def _hex_to_rgb(hex_color):
+    hex_color = (hex_color or '').lstrip('#')
+    if len(hex_color) != 6:
+        return ACCENT
+    try:
+        return tuple(int(hex_color[i:i + 2], 16) / 255 for i in (0, 2, 4))
+    except ValueError:
+        return ACCENT
+
+
+def _get_preferences(request):
+    """(font, accent_rgb, image_style) for this user, falling back to
+    defaults if they've never saved preferences (or the settings table
+    somehow isn't there, e.g. mid-upgrade before migrations ran)."""
+    try:
+        from .models import PdfExportSettings
+        obj = PdfExportSettings.objects.filter(user=request.user).first()
+    except Exception:
+        obj = None
+    if not obj:
+        return 'helvetica', ACCENT, 'cropped'
+    return obj.font, _hex_to_rgb(obj.accent_color), obj.image_style
+
+
+def _recipe_image_jpeg(recipe, image_style='cropped', max_size=900):
     if not recipe.image:
         return None
     try:
@@ -26,7 +54,19 @@ def _recipe_image_jpeg(recipe):
             img = Image.open(f)
             img.load()
         img = img.convert('RGB')
-        img.thumbnail((900, 900))
+        if image_style == 'cropped':
+            target_ratio = IMAGE_BOX[0] / IMAGE_BOX[1]
+            w, h = img.size
+            current_ratio = w / h
+            if current_ratio > target_ratio:
+                new_w = int(h * target_ratio)
+                offset = (w - new_w) // 2
+                img = img.crop((offset, 0, offset + new_w, h))
+            else:
+                new_h = int(w / target_ratio)
+                offset = (h - new_h) // 2
+                img = img.crop((0, offset, w, offset + new_h))
+        img.thumbnail((max_size, max_size))
         buf = BytesIO()
         img.save(buf, format='JPEG', quality=85)
         return buf.getvalue(), img.width, img.height
@@ -45,7 +85,10 @@ def _fmt_amount(value):
     return f'{float(value):g}'
 
 
-def _ingredient_row(ingredient):
+def _ingredient_tuple(ingredient):
+    """(amount, food, is_header) - the shape step_block() expects."""
+    if ingredient.is_header:
+        return '', ingredient.note or '', True
     if ingredient.no_amount:
         amount = ''
     else:
@@ -53,7 +96,7 @@ def _ingredient_row(ingredient):
         amount = f'{_fmt_amount(ingredient.amount)}{unit}'
     food = ingredient.food.name if ingredient.food else ''
     note = f' ({ingredient.note})' if ingredient.note else ''
-    return amount, f'{food}{note}'
+    return amount, f'{food}{note}', False
 
 
 @login_required
@@ -73,16 +116,43 @@ def recipe_picker(request):
 
 
 @login_required
+@require_http_methods(['GET', 'POST'])
+def settings_api(request):
+    from .models import FONT_CHOICES, IMAGE_STYLE_CHOICES, PdfExportSettings
+
+    obj, _ = PdfExportSettings.objects.get_or_create(user=request.user)
+    if request.method == 'POST':
+        try:
+            data = json.loads(request.body or '{}')
+        except ValueError:
+            data = {}
+        if data.get('font') in dict(FONT_CHOICES):
+            obj.font = data['font']
+        accent = data.get('accent_color')
+        if isinstance(accent, str) and len(accent.lstrip('#')) == 6:
+            obj.accent_color = accent if accent.startswith('#') else f'#{accent}'
+        if data.get('image_style') in dict(IMAGE_STYLE_CHOICES):
+            obj.image_style = data['image_style']
+        obj.save()
+    return JsonResponse({
+        'font': obj.font,
+        'accent_color': obj.accent_color,
+        'image_style': obj.image_style,
+        'font_choices': FONT_CHOICES,
+        'image_style_choices': IMAGE_STYLE_CHOICES,
+    })
+
+
+@login_required
 def export_recipe_pdf(request, pk):
     recipe = get_object_or_404(Recipe, pk=pk, space=request.space)
 
     if not _user_can_view_recipe(request, recipe):
         raise PermissionDenied()
 
-    steps = recipe.steps.order_by('order', 'pk').prefetch_related('ingredients__food', 'ingredients__unit')
+    font, accent, image_style = _get_preferences(request)
 
-    doc = PDFDocument(footer_label=recipe.name)
-    doc.heading(recipe.name, size=20)
+    steps = recipe.steps.order_by('order', 'pk').prefetch_related('ingredients__food', 'ingredients__unit')
 
     meta_bits = [f'Servings: {recipe.servings}']
     if recipe.servings_text:
@@ -91,48 +161,31 @@ def export_recipe_pdf(request, pk):
         meta_bits.append(f'Prep: {recipe.working_time} min')
     if recipe.waiting_time:
         meta_bits.append(f'Cook/Wait: {recipe.waiting_time} min')
-    doc.paragraph('   •   '.join(meta_bits), size=9.5, color=MUTED)
 
-    image = _recipe_image_jpeg(recipe)
-    if image:
-        jpeg_bytes, width, height = image
-        doc.image(jpeg_bytes, width, height)
+    image = _recipe_image_jpeg(recipe, image_style=image_style)
 
-    if recipe.description:
-        doc.paragraph(recipe.description, size=10.5, italic=True, color=MUTED)
+    image_box = IMAGE_BOX
+    if image and image_style != 'cropped':
+        # Not cropping to IMAGE_BOX's aspect ratio here, so placing the raw
+        # image at that fixed box would stretch/squash it - fit it into a
+        # same-ish-sized box instead, preserving its real aspect ratio.
+        _, real_w, real_h = image
+        max_w, max_h = IMAGE_BOX
+        scale = min(max_w / real_w, max_h / real_h, 1)
+        image_box = (real_w * scale, real_h * scale)
 
-    doc.rule()
-    doc.heading('Ingredients', size=13)
+    doc = PDFDocument(footer_label=recipe.name, accent=accent, font=font)
+    doc.header_block(
+        recipe.name,
+        '   •   '.join(meta_bits),
+        recipe.description,
+        image=image,
+        image_box=image_box,
+    )
 
-    ingredient_rows = []
-    for step in steps:
-        for ingredient in step.ingredients.all():
-            if ingredient.is_header:
-                ingredient_rows.append((True, ingredient.note or ''))
-            else:
-                ingredient_rows.append((False, _ingredient_row(ingredient)))
-
-    # Size the amount column to the longest amount actually in this recipe
-    # rather than a fixed guess - otherwise a long amount string (or an
-    # unexpected unit name) draws into the ingredient name next to it.
-    amount_col_width = 60
-    for is_header, row in ingredient_rows:
-        if not is_header:
-            amount_col_width = max(amount_col_width, text_width(row[0], 10, bold=True) + 12)
-
-    for is_header, row in ingredient_rows:
-        if is_header:
-            doc.paragraph(row, size=10, bold=True)
-        else:
-            amount, food = row
-            doc.two_column_line(amount, food, size=10, col_width=amount_col_width, left_color=ACCENT)
-
-    doc.rule()
-    doc.heading('Instructions', size=13)
     for i, step in enumerate(steps, start=1):
-        label = f'{i}. {step.name}' if step.name else f'Step {i}'
-        doc.paragraph(label, size=10, bold=True)
-        doc.paragraph(step.instruction, size=10)
+        ingredients = [_ingredient_tuple(ingredient) for ingredient in step.ingredients.all()]
+        doc.step_block(i, step.name, ingredients, step.instruction)
 
     if recipe.nutrition:
         doc.rule()

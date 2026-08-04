@@ -1,15 +1,16 @@
 """Minimal, dependency-free PDF writer.
 
-Generates a simple single-column document (headings, wrapped paragraphs,
-two-column rows, one embedded JPEG image, a page footer) directly as PDF
-bytes, using only the Python standard library - no third-party PDF
-package and no system library (Pango/Cairo/etc.) needs to be installed
-anywhere.
+Generates a recipe-shaped document (a title/description/image header
+block, per-step ingredient-checklist + instruction two-column blocks, a
+nutrition table, a page footer) directly as PDF bytes, using only the
+Python standard library - no third-party PDF package and no system
+library (Pango/Cairo/etc.) needs to be installed anywhere.
 
 This is intentionally NOT a general-purpose PDF library - standard 14
-fonts only (Helvetica / Helvetica-Bold / Helvetica-Oblique) with
-WinAnsiEncoding (~cp1252); characters outside that range are replaced
-with '?'. Word-wrap widths are an approximation (Helvetica isn't
+fonts only, one of three families (Helvetica / Times / Courier, each
+with a bold and an italic/oblique variant) with WinAnsiEncoding
+(~cp1252); characters outside that range are replaced with '?'.
+Word-wrap widths are an approximation (none of these fonts are
 monospace and we don't carry a real glyph-width table), so occasionally
 a line may look a little looser/tighter than a real typesetting engine
 would produce - that's a cosmetic trade-off for having zero external
@@ -24,14 +25,23 @@ MARGIN = 56.7         # ~2cm
 
 BLACK = (0.13, 0.13, 0.13)
 MUTED = (0.48, 0.48, 0.48)
-ACCENT = (0.72, 0.36, 0.10)      # warm terracotta - headings, rules, borders
+ACCENT = (0.72, 0.36, 0.10)      # warm terracotta - default accent color
 LIGHT_BORDER = (0.85, 0.82, 0.78)
+
+# Standard-14 PDF fonts - no embedding needed, every PDF viewer has these.
+FONT_FAMILIES = {
+    'helvetica': ('Helvetica', 'Helvetica-Bold', 'Helvetica-Oblique'),
+    'times': ('Times-Roman', 'Times-Bold', 'Times-Italic'),
+    'courier': ('Courier', 'Courier-Bold', 'Courier-Oblique'),
+}
 
 _NARROW = set('iIl.,;:\'"|!fjt ')
 _WIDE = set('mwMW@%')
 
 
-def _char_width(ch, size, bold):
+def _char_width(ch, size, bold, monospace=False):
+    if monospace:
+        return 0.6 * size
     if ch in _WIDE:
         w = 0.86
     elif ch in _NARROW:
@@ -45,8 +55,8 @@ def _char_width(ch, size, bold):
     return w * size
 
 
-def _text_width(text, size, bold):
-    return sum(_char_width(c, size, bold) for c in text)
+def _text_width(text, size, bold, monospace=False):
+    return sum(_char_width(c, size, bold, monospace) for c in text)
 
 
 def text_width(text, size, bold=False):
@@ -55,23 +65,23 @@ def text_width(text, size, bold=False):
     return _text_width(text, size, bold)
 
 
-def _wrap(text, size, bold, max_width):
+def _wrap(text, size, bold, max_width, monospace=False):
     """Word-wrap a single line (no embedded newlines) to fit max_width."""
     lines = []
     current = ''
     for word in text.split(' '):
         candidate = f'{current} {word}'.strip()
-        if current and _text_width(candidate, size, bold) > max_width:
+        if current and _text_width(candidate, size, bold, monospace) > max_width:
             lines.append(current)
             current = word
         else:
             current = candidate
         # Hard-break a single word/fragment that's wider than a whole line.
-        while _text_width(current, size, bold) > max_width and len(current) > 1:
+        while _text_width(current, size, bold, monospace) > max_width and len(current) > 1:
             lo, hi = 1, len(current)
             while lo < hi:
                 mid = (lo + hi + 1) // 2
-                if _text_width(current[:mid], size, bold) <= max_width:
+                if _text_width(current[:mid], size, bold, monospace) <= max_width:
                     lo = mid
                 else:
                     hi = mid - 1
@@ -104,12 +114,15 @@ def _text_op(x, y, text, size, font, color):
 
 
 class PDFDocument:
-    def __init__(self, footer_label=None):
+    def __init__(self, footer_label=None, accent=ACCENT, font='helvetica'):
         self._page_contents = []   # list of bytes, one per completed page
         self._images = []          # list of (jpeg_bytes, width, height)
         self._ops = []             # list of bytes, current page's operators
         self._y = PAGE_HEIGHT - MARGIN
         self.footer_label = footer_label
+        self.accent = accent
+        self.font_family = font if font in FONT_FAMILIES else 'helvetica'
+        self._monospace = self.font_family == 'courier'
 
     # -- low level -----------------------------------------------------------
     def _new_page(self):
@@ -121,41 +134,50 @@ class PDFDocument:
         if self._y - height < MARGIN:
             self._new_page()
 
-    def _draw_text(self, x, y, text, size, bold=False, italic=False, color=BLACK):
+    def _wrap(self, text, size, bold, max_width):
+        return _wrap(text, size, bold, max_width, self._monospace)
+
+    def _text_width(self, text, size, bold):
+        return _text_width(text, size, bold, self._monospace)
+
+    def _draw_text(self, x, y, text, size, bold=False, italic=False, color=None):
+        color = color if color is not None else BLACK
         font = 'F2' if bold else ('F3' if italic else 'F1')
         self._ops.append(_text_op(x, y, text, size, font, color))
 
     # -- public layout API -----------------------------------------------------
-    def heading(self, text, size=15, color=ACCENT):
+    def heading(self, text, size=15, color=None):
+        color = color if color is not None else self.accent
         self._ensure_space(size * 1.8)
         self._y -= size
         self._draw_text(MARGIN, self._y, text, size, bold=True, color=color)
         self._y -= size * 0.7
 
-    def paragraph(self, text, size=10, bold=False, italic=False, color=BLACK):
+    def paragraph(self, text, size=10, bold=False, italic=False, color=None):
         max_width = PAGE_WIDTH - 2 * MARGIN
         line_height = size * 1.35
         for raw_line in (text or '').split('\n'):
             if not raw_line.strip():
                 self._y -= line_height * 0.6
                 continue
-            for line in _wrap(raw_line, size, bold, max_width):
+            for line in self._wrap(raw_line, size, bold, max_width):
                 self._ensure_space(line_height)
                 self._y -= line_height
                 self._draw_text(MARGIN, self._y, line, size, bold, italic, color)
 
     def two_column_line(self, left, right, size=10, indent=0, col_width=95,
-                         left_color=BLACK, right_color=BLACK):
+                         left_color=None, right_color=None):
         max_width = PAGE_WIDTH - 2 * MARGIN - indent - col_width
         line_height = size * 1.45
-        for i, line in enumerate(_wrap(right, size, False, max_width)):
+        for i, line in enumerate(self._wrap(right, size, False, max_width)):
             self._ensure_space(line_height)
             self._y -= line_height
             if i == 0 and left:
                 self._draw_text(MARGIN + indent, self._y, left, size, bold=True, color=left_color)
             self._draw_text(MARGIN + indent + col_width, self._y, line, size, color=right_color)
 
-    def rule(self, color=ACCENT, thickness=1.2, gap_before=4, gap_after=10):
+    def rule(self, color=None, thickness=1.2, gap_before=4, gap_after=10):
+        color = color if color is not None else self.accent
         self._ensure_space(gap_before + gap_after)
         self._y -= gap_before
         r, g, b = color
@@ -165,6 +187,15 @@ class PDFDocument:
         )
         self._y -= gap_after
 
+    def _place_image(self, jpeg_bytes, real_w, real_h, x, y, w, h, border_color=LIGHT_BORDER):
+        idx = len(self._images)
+        self._images.append((jpeg_bytes, real_w, real_h))
+        self._ops.append(f'q {w:.2f} 0 0 {h:.2f} {x:.2f} {y:.2f} cm /Im{idx} Do Q'.encode('ascii'))
+        r, g, b = border_color
+        self._ops.append(
+            f'{r:.3f} {g:.3f} {b:.3f} RG 0.75 w {x:.2f} {y:.2f} {w:.2f} {h:.2f} re S'.encode('ascii')
+        )
+
     def image(self, jpeg_bytes, width, height, max_width=None, max_height=220,
               gap_before=10, gap_after=14, border_color=LIGHT_BORDER):
         max_width = max_width or (PAGE_WIDTH - 2 * MARGIN)
@@ -173,16 +204,144 @@ class PDFDocument:
         self._ensure_space(gap_before + h + gap_after)
         self._y -= gap_before
         self._y -= h
-        idx = len(self._images)
-        self._images.append((jpeg_bytes, width, height))
-        self._ops.append(
-            f'q {w:.2f} 0 0 {h:.2f} {MARGIN:.2f} {self._y:.2f} cm /Im{idx} Do Q'.encode('ascii')
-        )
-        r, g, b = border_color
-        self._ops.append(
-            f'{r:.3f} {g:.3f} {b:.3f} RG 0.75 w {MARGIN:.2f} {self._y:.2f} {w:.2f} {h:.2f} re S'.encode('ascii')
-        )
+        self._place_image(jpeg_bytes, width, height, MARGIN, self._y, w, h, border_color)
         self._y -= gap_after
+
+    def header_block(self, title, meta_text, description, image=None, image_box=(190, 150), title_size=20):
+        """Title/meta/description on the left, an image (already cropped by
+        the caller to image_box's aspect ratio) on the right. `image` is
+        (jpeg_bytes, real_width, real_height) or None.
+        """
+        content_width = PAGE_WIDTH - 2 * MARGIN
+        gap = 20
+        img_w, img_h = image_box if image else (0, 0)
+        left_width = content_width - (img_w + gap if image else 0)
+
+        title_line_h = title_size * 1.25
+        title_lines = self._wrap(title, title_size, True, left_width)
+
+        meta_size, meta_line_h = 9.5, 9.5 * 1.4
+
+        desc_size, desc_line_h = 10.5, 10.5 * 1.35
+        desc_lines = []
+        for raw in (description or '').split('\n'):
+            if not raw.strip():
+                if description:
+                    desc_lines.append(None)
+                continue
+            desc_lines.extend(self._wrap(raw, desc_size, False, left_width))
+
+        left_height = (
+            len(title_lines) * title_line_h + 8 + meta_line_h + 10
+            + sum(desc_line_h * 0.6 if l is None else desc_line_h for l in desc_lines)
+        )
+        block_height = max(left_height, img_h)
+
+        self._ensure_space(block_height)
+        top_y = self._y
+
+        y = top_y
+        for line in title_lines:
+            y -= title_line_h
+            self._draw_text(MARGIN, y, line, title_size, bold=True, color=self.accent)
+        y -= 8
+        y -= meta_line_h
+        self._draw_text(MARGIN, y, meta_text, meta_size, color=MUTED)
+        y -= 10
+        for line in desc_lines:
+            if line is None:
+                y -= desc_line_h * 0.6
+                continue
+            y -= desc_line_h
+            self._draw_text(MARGIN, y, line, desc_size, italic=True, color=MUTED)
+
+        if image:
+            jpeg_bytes, real_w, real_h = image
+            img_x = MARGIN + left_width + gap
+            img_y = top_y - img_h
+            self._place_image(jpeg_bytes, real_w, real_h, img_x, img_y, img_w, img_h)
+
+        self._y = top_y - block_height - 16
+
+    def step_block(self, index, step_name, ingredients, instruction, size=10, left_frac=0.4, gap=18):
+        """A step heading, then two columns underneath it: this step's own
+        ingredients as a checklist on the left, its instruction text on the
+        right. `ingredients` is a list of (amount_str, food_str) tuples.
+        """
+        content_width = PAGE_WIDTH - 2 * MARGIN
+        left_width = content_width * left_frac
+        right_width = content_width - left_width - gap
+        right_x = MARGIN + left_width + gap
+
+        heading_size = 12.5
+
+        box = size * 0.75
+        # Sized to the longest amount actually in this step rather than a
+        # fixed guess - an unexpectedly long amount string would otherwise
+        # draw into the food name next to it (this bit the fixed-column
+        # version of this layout before).
+        amount_col_w = 40
+        for amount, _food, is_header in ingredients:
+            if not is_header and amount:
+                amount_col_w = max(amount_col_w, self._text_width(amount, size, True) + 10)
+        food_x_offset = box + 8 + amount_col_w
+        food_width = max(20, left_width - food_x_offset)
+
+        row_h = size * 1.6
+        left_rows = []
+        for amount, food, is_header in ingredients:
+            width = left_width if is_header else food_width
+            wrapped = self._wrap(food, size, is_header, width) if food else ['']
+            left_rows.append((amount, wrapped, is_header))
+        left_height = sum(row_h * max(1, len(w)) for _, w, _ in left_rows)
+
+        line_h = size * 1.35
+        right_lines = []
+        for raw in (instruction or '').split('\n'):
+            if not raw.strip():
+                right_lines.append(None)
+                continue
+            right_lines.extend(self._wrap(raw, size, False, right_width))
+        right_height = sum(line_h * 0.6 if l is None else line_h for l in right_lines)
+
+        body_height = max(left_height, right_height)
+        total_height = heading_size * 1.3 + 6 + body_height
+
+        self._ensure_space(total_height)
+
+        label = f'{index}. {step_name}' if step_name else f'Step {index}'
+        self._y -= heading_size
+        self._draw_text(MARGIN, self._y, label, heading_size, bold=True, color=self.accent)
+        self._y -= heading_size * 0.3
+        self._y -= 6
+
+        top_y = self._y
+
+        y = top_y
+        for amount, wrapped, is_header in left_rows:
+            row_top = y
+            if is_header:
+                for i, line in enumerate(wrapped):
+                    self._draw_text(MARGIN, row_top - size - i * row_h, line, size, bold=True)
+            else:
+                self._ops.append(
+                    f'0.55 0.55 0.55 RG 0.75 w {MARGIN:.2f} {row_top - box - 1:.2f} {box:.2f} {box:.2f} re S'.encode('ascii')
+                )
+                if amount:
+                    self._draw_text(MARGIN + box + 6, row_top - size, amount, size, bold=True, color=self.accent)
+                for i, line in enumerate(wrapped):
+                    self._draw_text(MARGIN + food_x_offset, row_top - size - i * row_h, line, size)
+            y -= row_h * max(1, len(wrapped))
+
+        y = top_y
+        for line in right_lines:
+            if line is None:
+                y -= line_h * 0.6
+                continue
+            y -= line_h
+            self._draw_text(right_x, y, line, size)
+
+        self._y = top_y - body_height - 14
 
     # -- serialization ---------------------------------------------------------
     def to_bytes(self):
@@ -218,9 +377,10 @@ class PDFDocument:
         content_ids = [reserve() for _ in pages]
         resources_id = reserve()
 
-        objects[font1_id] = b'<< /Type /Font /Subtype /Type1 /BaseFont /Helvetica /Encoding /WinAnsiEncoding >>'
-        objects[font2_id] = b'<< /Type /Font /Subtype /Type1 /BaseFont /Helvetica-Bold /Encoding /WinAnsiEncoding >>'
-        objects[font3_id] = b'<< /Type /Font /Subtype /Type1 /BaseFont /Helvetica-Oblique /Encoding /WinAnsiEncoding >>'
+        regular, bold, italic = FONT_FAMILIES[self.font_family]
+        objects[font1_id] = f'<< /Type /Font /Subtype /Type1 /BaseFont /{regular} /Encoding /WinAnsiEncoding >>'.encode('ascii')
+        objects[font2_id] = f'<< /Type /Font /Subtype /Type1 /BaseFont /{bold} /Encoding /WinAnsiEncoding >>'.encode('ascii')
+        objects[font3_id] = f'<< /Type /Font /Subtype /Type1 /BaseFont /{italic} /Encoding /WinAnsiEncoding >>'.encode('ascii')
 
         for oid, (jpeg_bytes, width, height) in zip(image_ids, self._images):
             header = (

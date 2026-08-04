@@ -1,4 +1,5 @@
 import {TandoorPlugin} from '@/types/Plugins.ts'
+import {VListItem} from "vuetify/components";
 import SettingsNavItem from "@/plugins/tandoor-pdfExport/components/SettingsNavItem.vue";
 
 export const plugin: TandoorPlugin = {
@@ -16,7 +17,11 @@ export const plugin: TandoorPlugin = {
     ],
     navigationDrawer: [],
     bottomNavigation: [],
-    userNavigation: [],
+    // Same page, reachable from both places - a named route can be linked
+    // to from anywhere regardless of where it's nested in the route tree.
+    userNavigation: [
+        {component: VListItem, prependIcon: 'fa-solid fa-file-pdf', title: 'Export_Recipe_PDF', to: {name: 'SettingsPdfExport'}},
+    ],
     settingsComponent: SettingsNavItem,
     disabled: false,
 } as TandoorPlugin

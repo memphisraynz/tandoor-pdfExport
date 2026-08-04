@@ -1,9 +1,19 @@
 # Tandoor PDF Export Plugin
 
-Adds a "PDF Export" tab under Settings, where you can search for a recipe
-and download it as a formatted PDF. Also reachable directly at
-`/pdf-export/` (a plain server-rendered page, no Vue/JS build involved)
-as a fallback that doesn't depend on the frontend build succeeding.
+Adds a "PDF Export" entry both under Settings and in the user avatar
+menu, where you can search for a recipe, download it as a formatted PDF,
+and customize the font/accent color/image style used. Also reachable
+directly at `/pdf-export/` (a plain server-rendered page, no Vue/JS
+build involved) as a fallback that doesn't depend on the frontend build
+succeeding.
+
+The PDF itself: title/description/meta on the left, the recipe photo on
+the right (cropped to a fixed box by default, so a full-resolution
+portrait or landscape photo doesn't distort or letterbox oddly - or
+choose "Full image" in the appearance settings to fit it uncropped
+instead). Each step shows its own ingredient checklist next to its own
+instructions, rather than one big ingredients list followed by one big
+instructions list.
 
 It's under Settings rather than the existing recipe Import/Export
 section because that section is a hardcoded core mechanism (a fixed
@@ -26,6 +36,22 @@ metrics, so line breaks are close-enough rather than typographically
 perfect - a cosmetic trade-off, not a correctness one. Text outside
 Latin-1/WinAnsiEncoding (e.g. CJK or Cyrillic recipe names) will render
 as "?", since embedding real Unicode fonts is out of scope for this.
+Font choice is one of three standard-14 PDF font families (Helvetica,
+Times, Courier) - again no embedding needed, so no new dependency.
+
+## Appearance settings
+
+Stored per-user in a small `PdfExportSettings` model (this plugin's only
+database table): font family, accent color (hex), and image style
+(cropped/full). The settings form in the Vue page talks to a plain JSON
+endpoint at `/pdf-export/api/settings/` (GET to read, POST to save) -
+this is hand-written, not part of Tandoor's generated API client (which
+has no knowledge of plugin endpoints), so it's the one part of this
+plugin I haven't been able to verify end-to-end myself. If saving
+preferences doesn't work, check the browser console for a CSRF-related
+error first - the POST manually attaches Django's `csrftoken` cookie
+value as an `X-CSRFToken` header, which assumes Tandoor hasn't renamed
+that cookie from Django's default.
 
 ## How Tandoor plugins work (short version)
 
@@ -54,7 +80,10 @@ string - so it works no matter what you name the folder you clone into).
    var again so future restarts skip it.
 
 3. Restart Tandoor. On the admin "System" page you should see "PDF Export"
-   listed under Plugins, and a new "PDF Export" tab under Settings.
+   listed under Plugins, and a new "PDF Export" tab under Settings (and
+   in the user avatar menu). The plugin's one database migration runs
+   automatically as part of Tandoor's normal `manage.py migrate` on boot
+   - no separate migration step needed.
 
 That's it - no other setup step, on the server or anywhere else.
 
