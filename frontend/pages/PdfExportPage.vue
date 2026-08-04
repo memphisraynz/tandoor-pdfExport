@@ -1,7 +1,7 @@
 <template>
     <v-container>
         <v-row>
-            <v-col cols="12" md="8" lg="6">
+            <v-col cols="12" lg="9" xl="7">
                 <h1 class="mb-4">{{ $t('Export_Recipe_PDF') }}</h1>
                 <p class="text-medium-emphasis mb-4">{{ $t('Export_Recipe_PDF_Help') }}</p>
 
