@@ -1,17 +1,19 @@
 """Minimal, dependency-free PDF writer.
 
 Generates a simple single-column document (headings, wrapped paragraphs,
-two-column rows, one embedded JPEG image) directly as PDF bytes, using
-only the Python standard library - no third-party PDF package and no
-system library (Pango/Cairo/etc.) needs to be installed anywhere.
+two-column rows, one embedded JPEG image, a page footer) directly as PDF
+bytes, using only the Python standard library - no third-party PDF
+package and no system library (Pango/Cairo/etc.) needs to be installed
+anywhere.
 
 This is intentionally NOT a general-purpose PDF library - standard 14
-fonts only (Helvetica/Helvetica-Bold) with WinAnsiEncoding (~cp1252);
-characters outside that range are replaced with '?'. Word-wrap widths
-are an approximation (Helvetica isn't monospace and we don't carry a
-real glyph-width table), so occasionally a line may look a little
-looser/tighter than a real typesetting engine would produce - that's a
-cosmetic trade-off for having zero external dependencies, not a bug.
+fonts only (Helvetica / Helvetica-Bold / Helvetica-Oblique) with
+WinAnsiEncoding (~cp1252); characters outside that range are replaced
+with '?'. Word-wrap widths are an approximation (Helvetica isn't
+monospace and we don't carry a real glyph-width table), so occasionally
+a line may look a little looser/tighter than a real typesetting engine
+would produce - that's a cosmetic trade-off for having zero external
+dependencies, not a bug.
 
 Good enough for a one-page recipe printout; nothing more is in scope.
 """
@@ -19,6 +21,11 @@ Good enough for a one-page recipe printout; nothing more is in scope.
 PAGE_WIDTH = 595.28   # A4, in points (1/72 inch)
 PAGE_HEIGHT = 841.89
 MARGIN = 56.7         # ~2cm
+
+BLACK = (0.13, 0.13, 0.13)
+MUTED = (0.48, 0.48, 0.48)
+ACCENT = (0.72, 0.36, 0.10)      # warm terracotta - headings, rules, borders
+LIGHT_BORDER = (0.85, 0.82, 0.78)
 
 _NARROW = set('iIl.,;:\'"|!fjt ')
 _WIDE = set('mwMW@%')
@@ -83,14 +90,28 @@ def _pdf_text_bytes(text):
     return raw.replace(b'\\', b'\\\\').replace(b'(', b'\\(').replace(b')', b'\\)')
 
 
+def _color_op(color, op):
+    r, g, b = color
+    return f'{r:.3f} {g:.3f} {b:.3f} {op}'.encode('ascii')
+
+
+def _text_op(x, y, text, size, font, color):
+    return (
+        _color_op(color, 'rg') + b' BT /' + font.encode('ascii')
+        + f' {size:.1f} Tf {x:.2f} {y:.2f} Td ('.encode('ascii')
+        + _pdf_text_bytes(text) + b') Tj ET'
+    )
+
+
 class PDFDocument:
-    def __init__(self):
+    def __init__(self, footer_label=None):
         self._page_contents = []   # list of bytes, one per completed page
         self._images = []          # list of (jpeg_bytes, width, height)
         self._ops = []             # list of bytes, current page's operators
         self._y = PAGE_HEIGHT - MARGIN
+        self.footer_label = footer_label
 
-    # -- low level ---------------------------------------------------------
+    # -- low level -----------------------------------------------------------
     def _new_page(self):
         self._page_contents.append(b'\n'.join(self._ops))
         self._ops = []
@@ -100,22 +121,18 @@ class PDFDocument:
         if self._y - height < MARGIN:
             self._new_page()
 
-    def _draw_text(self, x, y, text, size, bold):
-        font = b'/F2' if bold else b'/F1'
-        op = (
-            b'BT ' + font + f' {size:.1f} Tf {x:.2f} {y:.2f} Td ('.encode('ascii')
-            + _pdf_text_bytes(text) + b') Tj ET'
-        )
-        self._ops.append(op)
+    def _draw_text(self, x, y, text, size, bold=False, italic=False, color=BLACK):
+        font = 'F2' if bold else ('F3' if italic else 'F1')
+        self._ops.append(_text_op(x, y, text, size, font, color))
 
-    # -- public layout API ---------------------------------------------------
-    def heading(self, text, size=15):
-        self._ensure_space(size * 1.6)
+    # -- public layout API -----------------------------------------------------
+    def heading(self, text, size=15, color=ACCENT):
+        self._ensure_space(size * 1.8)
         self._y -= size
-        self._draw_text(MARGIN, self._y, text, size, bold=True)
-        self._y -= size * 0.6
+        self._draw_text(MARGIN, self._y, text, size, bold=True, color=color)
+        self._y -= size * 0.7
 
-    def paragraph(self, text, size=10, bold=False):
+    def paragraph(self, text, size=10, bold=False, italic=False, color=BLACK):
         max_width = PAGE_WIDTH - 2 * MARGIN
         line_height = size * 1.35
         for raw_line in (text or '').split('\n'):
@@ -125,42 +142,63 @@ class PDFDocument:
             for line in _wrap(raw_line, size, bold, max_width):
                 self._ensure_space(line_height)
                 self._y -= line_height
-                self._draw_text(MARGIN, self._y, line, size, bold)
+                self._draw_text(MARGIN, self._y, line, size, bold, italic, color)
 
-    def two_column_line(self, left, right, size=10, indent=0, col_width=95):
+    def two_column_line(self, left, right, size=10, indent=0, col_width=95,
+                         left_color=BLACK, right_color=BLACK):
         max_width = PAGE_WIDTH - 2 * MARGIN - indent - col_width
-        line_height = size * 1.4
+        line_height = size * 1.45
         for i, line in enumerate(_wrap(right, size, False, max_width)):
             self._ensure_space(line_height)
             self._y -= line_height
             if i == 0 and left:
-                self._draw_text(MARGIN + indent, self._y, left, size, bold=True)
-            self._draw_text(MARGIN + indent + col_width, self._y, line, size, bold=False)
+                self._draw_text(MARGIN + indent, self._y, left, size, bold=True, color=left_color)
+            self._draw_text(MARGIN + indent + col_width, self._y, line, size, color=right_color)
 
-    def rule(self):
-        self._ensure_space(4)
-        self._y -= 4
+    def rule(self, color=ACCENT, thickness=1.2, gap_before=4, gap_after=10):
+        self._ensure_space(gap_before + gap_after)
+        self._y -= gap_before
+        r, g, b = color
         self._ops.append(
+            f'{r:.3f} {g:.3f} {b:.3f} RG {thickness:.2f} w '
             f'{MARGIN:.2f} {self._y:.2f} m {PAGE_WIDTH - MARGIN:.2f} {self._y:.2f} l S'.encode('ascii')
         )
-        self._y -= 8
+        self._y -= gap_after
 
-    def image(self, jpeg_bytes, width, height, max_width=240, max_height=200):
+    def image(self, jpeg_bytes, width, height, max_width=None, max_height=220,
+              gap_before=10, gap_after=14, border_color=LIGHT_BORDER):
+        max_width = max_width or (PAGE_WIDTH - 2 * MARGIN)
         scale = min(max_width / width, max_height / height, 1)
         w, h = width * scale, height * scale
-        self._ensure_space(h + 10)
+        self._ensure_space(gap_before + h + gap_after)
+        self._y -= gap_before
         self._y -= h
         idx = len(self._images)
         self._images.append((jpeg_bytes, width, height))
         self._ops.append(
             f'q {w:.2f} 0 0 {h:.2f} {MARGIN:.2f} {self._y:.2f} cm /Im{idx} Do Q'.encode('ascii')
         )
-        self._y -= 10
+        r, g, b = border_color
+        self._ops.append(
+            f'{r:.3f} {g:.3f} {b:.3f} RG 0.75 w {MARGIN:.2f} {self._y:.2f} {w:.2f} {h:.2f} re S'.encode('ascii')
+        )
+        self._y -= gap_after
 
-    # -- serialization -------------------------------------------------------
+    # -- serialization ---------------------------------------------------------
     def to_bytes(self):
         self._new_page()
         pages = self._page_contents
+        total = len(pages)
+
+        if self.footer_label:
+            footer_y = MARGIN - 26
+            with_footers = []
+            for i, content in enumerate(pages, start=1):
+                footer = _color_op(LIGHT_BORDER, 'RG') + f' 0.75 w {MARGIN:.2f} {footer_y + 12:.2f} m {PAGE_WIDTH - MARGIN:.2f} {footer_y + 12:.2f} l S'.encode('ascii')
+                footer += b'\n' + _text_op(MARGIN, footer_y, self.footer_label, 8, 'F1', MUTED)
+                footer += b'\n' + _text_op(PAGE_WIDTH - MARGIN - 60, footer_y, f'Page {i} of {total}', 8, 'F1', MUTED)
+                with_footers.append(content + b'\n' + footer)
+            pages = with_footers
 
         objects = {}
         next_id = [1]
@@ -174,6 +212,7 @@ class PDFDocument:
         pages_id = reserve()
         font1_id = reserve()
         font2_id = reserve()
+        font3_id = reserve()
         image_ids = [reserve() for _ in self._images]
         page_ids = [reserve() for _ in pages]
         content_ids = [reserve() for _ in pages]
@@ -181,6 +220,7 @@ class PDFDocument:
 
         objects[font1_id] = b'<< /Type /Font /Subtype /Type1 /BaseFont /Helvetica /Encoding /WinAnsiEncoding >>'
         objects[font2_id] = b'<< /Type /Font /Subtype /Type1 /BaseFont /Helvetica-Bold /Encoding /WinAnsiEncoding >>'
+        objects[font3_id] = b'<< /Type /Font /Subtype /Type1 /BaseFont /Helvetica-Oblique /Encoding /WinAnsiEncoding >>'
 
         for oid, (jpeg_bytes, width, height) in zip(image_ids, self._images):
             header = (
@@ -192,7 +232,7 @@ class PDFDocument:
 
         xobject_entries = ' '.join(f'/Im{i} {oid} 0 R' for i, oid in enumerate(image_ids))
         objects[resources_id] = (
-            f'<< /Font << /F1 {font1_id} 0 R /F2 {font2_id} 0 R >> '
+            f'<< /Font << /F1 {font1_id} 0 R /F2 {font2_id} 0 R /F3 {font3_id} 0 R >> '
             f'/XObject << {xobject_entries} >> >>'
         ).encode('ascii')
 

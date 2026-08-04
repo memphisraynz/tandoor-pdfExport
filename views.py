@@ -8,7 +8,7 @@ from django.shortcuts import get_object_or_404
 from cookbook.helper.permission_helper import has_group_permission
 from cookbook.models import Recipe
 
-from .pdf_writer import PDFDocument, text_width
+from .pdf_writer import ACCENT, MUTED, PDFDocument, text_width
 
 
 def _user_can_view_recipe(request, recipe):
@@ -65,8 +65,8 @@ def export_recipe_pdf(request, pk):
 
     steps = recipe.steps.order_by('order', 'pk').prefetch_related('ingredients__food', 'ingredients__unit')
 
-    doc = PDFDocument()
-    doc.heading(recipe.name, size=18)
+    doc = PDFDocument(footer_label=recipe.name)
+    doc.heading(recipe.name, size=20)
 
     meta_bits = [f'Servings: {recipe.servings}']
     if recipe.servings_text:
@@ -75,7 +75,7 @@ def export_recipe_pdf(request, pk):
         meta_bits.append(f'Prep: {recipe.working_time} min')
     if recipe.waiting_time:
         meta_bits.append(f'Cook/Wait: {recipe.waiting_time} min')
-    doc.paragraph('   '.join(meta_bits), size=9)
+    doc.paragraph('   •   '.join(meta_bits), size=9.5, color=MUTED)
 
     image = _recipe_image_jpeg(recipe)
     if image:
@@ -83,7 +83,7 @@ def export_recipe_pdf(request, pk):
         doc.image(jpeg_bytes, width, height)
 
     if recipe.description:
-        doc.paragraph(recipe.description, size=10)
+        doc.paragraph(recipe.description, size=10.5, italic=True, color=MUTED)
 
     doc.rule()
     doc.heading('Ingredients', size=13)
@@ -109,7 +109,7 @@ def export_recipe_pdf(request, pk):
             doc.paragraph(row, size=10, bold=True)
         else:
             amount, food = row
-            doc.two_column_line(amount, food, size=10, col_width=amount_col_width)
+            doc.two_column_line(amount, food, size=10, col_width=amount_col_width, left_color=ACCENT)
 
     doc.rule()
     doc.heading('Instructions', size=13)
